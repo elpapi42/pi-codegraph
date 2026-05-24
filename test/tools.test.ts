@@ -97,6 +97,24 @@ function makeNode(overrides: Record<string, unknown>) {
   };
 }
 
+function createExploreGraph(root: string, overrides: Record<string, unknown> = {}) {
+  const login = makeNode({ id: "login", name: "loginUser", signature: "function loginUser()", filePath: "src/auth.ts", startLine: 5, endLine: 7 });
+  const session = makeNode({ id: "session", name: "createSession", signature: "function createSession()", filePath: "src/auth.ts", startLine: 1, endLine: 3 });
+  const nodes = new Map<string, ReturnType<typeof makeNode>>([
+    [login.id, login],
+    [session.id, session],
+  ]);
+  const edges = [{ source: "login", target: "session", kind: "calls", line: 6 }];
+
+  return {
+    getProjectRoot: () => root,
+    getStats: () => ({ fileCount: 100 }),
+    findRelevantContext: async () => ({ nodes, edges, roots: ["login"] }),
+    getOutgoingEdges: (id: string) => (id === "login" ? edges : []),
+    ...overrides,
+  };
+}
+
 function createSymbolGraph() {
   const login = makeNode({ id: "login", name: "loginUser", signature: "function loginUser()", startLine: 10 });
   const caller = makeNode({ id: "caller", name: "handleSubmit", kind: "function", filePath: "src/ui.ts", startLine: 20, signature: "function handleSubmit()" });
@@ -138,6 +156,9 @@ function createSymbolGraph() {
     buildContext() {
       return { summary: "## Context\n\nRelevant auth context." };
     },
+    findRelevantContext: async () => ({ nodes: new Map(), edges: [], roots: [] }),
+    getStats: () => ({ fileCount: 100 }),
+    getOutgoingEdges: () => [],
     getFiles() {
       return [
         { path: "src/auth.ts", language: "typescript", nodeCount: 2, size: 100, modifiedAt: 1, indexedAt: 2 },
@@ -240,7 +261,7 @@ test("files tool returns real CodeGraph fixture tree and filters", async () => {
   }
 });
 
-test("node, callers, callees, impact, and context produce representative markdown", async () => {
+test("node, callers, callees, impact, context, and explore produce representative markdown", async () => {
   const tools = registerWithGraph(createSymbolGraph());
 
   const node = await executeTool(getTool(tools, "node"), { symbol: "loginUser", includeCode: true });
@@ -265,6 +286,96 @@ test("node, callers, callees, impact, and context produce representative markdow
 
   const context = await executeTool(getTool(tools, "context"), { task: "fix auth" });
   assert.match(context.content[0]?.text ?? "", /Relevant auth context/);
+
+  const explore = await executeTool(getTool(tools, "explore"), { query: "missing" });
+  assert.match(explore.content[0]?.text ?? "", /No relevant code found/);
+});
+
+test("explore returns grouped source sections and relationships", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-explore-"));
+  const previousLineNumberSetting = process.env.CODEGRAPH_EXPLORE_LINENUMS;
+  delete process.env.CODEGRAPH_EXPLORE_LINENUMS;
+  try {
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    fs.writeFileSync(path.join(root, "src", "auth.ts"), [
+      "export function createSession() {",
+      "  return 'session';",
+      "}",
+      "",
+      "export function loginUser() {",
+      "  return createSession();",
+      "}",
+      "",
+    ].join("\n"));
+
+    const tools = registerWithGraph(createExploreGraph(root));
+    const result = await executeTool(getTool(tools, "explore"), { query: "loginUser createSession", maxFiles: 1 });
+    const text = result.content[0]?.text ?? "";
+
+    assert.equal(result.isError, undefined);
+    assert.match(text, /## Exploration: loginUser createSession/);
+    assert.match(text, /### Relationships/);
+    assert.match(text, /loginUser → createSession/);
+    assert.match(text, /#### src\/auth\.ts/);
+    assert.match(text, /```typescript/);
+    assert.match(text, /export function loginUser/);
+    assert.match(text, /^5\texport function loginUser/m);
+  } finally {
+    if (previousLineNumberSetting == null) {
+      delete process.env.CODEGRAPH_EXPLORE_LINENUMS;
+    } else {
+      process.env.CODEGRAPH_EXPLORE_LINENUMS = previousLineNumberSetting;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("explore skips indexed paths that escape the project root", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-explore-safe-"));
+  try {
+    const escaping = makeNode({ id: "escape", name: "escapeRoot", filePath: "../outside.ts", startLine: 1, endLine: 1 });
+    const nodes = new Map<string, ReturnType<typeof makeNode>>([[escaping.id, escaping]]);
+    const tools = registerWithGraph(createExploreGraph(root, {
+      findRelevantContext: async () => ({ nodes, edges: [], roots: ["escape"] }),
+    }));
+
+    const result = await executeTool(getTool(tools, "explore"), { query: "escapeRoot" });
+    const text = result.content[0]?.text ?? "";
+
+    assert.equal(result.isError, undefined);
+    assert.match(text, /## Exploration: escapeRoot/);
+    assert.doesNotMatch(text, /outside/);
+    assert.doesNotMatch(text, /```/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("explore applies an explore-specific output budget cap", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-explore-budget-"));
+  try {
+    const nodes = new Map<string, ReturnType<typeof makeNode>>();
+    for (let i = 0; i < 8; i++) {
+      const node = makeNode({ id: `huge-${i}`, name: `hugeSymbol${i}_${"x".repeat(5000)}`, filePath: "src/missing.ts", startLine: 1, endLine: 1 });
+      nodes.set(node.id, node);
+    }
+    const ids = [...nodes.keys()];
+    const edges = ids.slice(1).map((target) => ({ source: ids[0]!, target, kind: "calls" }));
+
+    const tools = registerWithGraph(createExploreGraph(root, {
+      findRelevantContext: async () => ({ nodes, edges, roots: [ids[0]!] }),
+      getOutgoingEdges: () => [],
+    }));
+
+    const result = await executeTool(getTool(tools, "explore"), { query: "hugeSymbol", maxFiles: 5 });
+    const text = result.content[0]?.text ?? "";
+
+    assert.equal(result.isError, undefined);
+    assert.match(text, /explore output truncated to budget/);
+    assert.ok(text.length <= 18_500);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("symbol misses are normal non-error markdown results", async () => {
@@ -280,6 +391,7 @@ test("tool call renderer shows compact parameters in the header", () => {
 
   assert.equal(renderToolCall(getTool(tools, "search"), { query: "auth", kind: "function", limit: 25 }), "search \"auth\" kind=function limit=25");
   assert.equal(renderToolCall(getTool(tools, "context"), { task: "fix login redirect bug", maxNodes: 30, includeCode: false }), "context \"fix login redirect bug\" nodes=30 no-code");
+  assert.equal(renderToolCall(getTool(tools, "explore"), { query: "AuthService loginUser", maxFiles: 6 }), "explore \"AuthService loginUser\" files=6");
   assert.equal(renderToolCall(getTool(tools, "files"), { path: "src", pattern: "**/*.tsx", format: "tree", maxDepth: 3, includeMetadata: false }), "files src \"**/*.tsx\" tree depth=3 no-meta");
   assert.equal(renderToolCall(getTool(tools, "node"), { symbol: "AuthService.login", includeCode: true }), "node AuthService.login +code");
   assert.equal(renderToolCall(getTool(tools, "callers"), { symbol: "loginUser", limit: 50 }), "callers loginUser limit=50");

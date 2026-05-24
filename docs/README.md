@@ -17,7 +17,7 @@ When an agent asks a code-navigation question, the useful behavior is not merely
 5. Refuse to answer if freshness is unproven.
 6. Return bounded, model-friendly Markdown that helps the agent continue work.
 
-That is the core contract of this extension. The agent should be able to call `search`, `files`, `node`, `callers`, `callees`, `impact`, or `context` without first asking the user to initialize or sync CodeGraph manually. The first relevant tool call may initialize and index the project, but subsequent calls should reuse the same cached CodeGraph instance and avoid redundant work.
+That is the core contract of this extension. The agent should be able to call `search`, `files`, `node`, `callers`, `callees`, `impact`, `context`, or `explore` without first asking the user to initialize or sync CodeGraph manually. The first relevant tool call may initialize and index the project, but subsequent calls should reuse the same cached CodeGraph instance and avoid redundant work.
 
 This extension replaces the older CodeMapper-style mental model with CodeGraph’s richer semantic model. It is not a strict compatibility layer for old `map/search/outline/expand/path` JSON-array tools. It exposes a Pi-native CodeGraph surface with simple tool names and Markdown results.
 
@@ -28,7 +28,6 @@ This extension replaces the older CodeMapper-style mental model with CodeGraph�
 - It does not expose `projectPath` on tools. Exploration is limited to the active Pi path.
 - It does not register `/cg:init`; tools initialize/index/sync automatically when needed.
 - It does not run full readiness from `session_start`; startup must not unexpectedly mutate or index the workspace.
-- It does not register `explore` in v1. `explore` needs a complete source-slicing implementation before it is safe to expose.
 - It does not shell out to `codegraph` CLI commands.
 - It does not proxy or embed the CodeGraph MCP server.
 - It does not import private CodeGraph source files from `codegraph/src/*`.
@@ -92,7 +91,8 @@ The entrypoint constructs one runtime and registers commands/tools:
 - `src/index.ts` — Pi extension default export and lifecycle wiring.
 - `src/runtime.ts` — root resolution, CodeGraph open/init/index/sync, status, uninit, cache, concurrency.
 - `src/commands.ts` — `/cg:status` and `/cg:uninit`.
-- `src/tools.ts` — tool schemas, registration wrapper, handlers, and Markdown formatting.
+- `src/tools.ts` — tool schemas, registration wrapper, lightweight handlers, and Markdown formatting.
+- `src/explore.ts` — source-slicing, relationship-map, clustering, and adaptive-budget implementation for `explore`.
 - `src/symbols.ts` — symbol lookup/disambiguation helpers adapted from CodeGraph MCP behavior.
 - `src/result.ts` — Pi text result envelope and truncation.
 - `src/validate.ts` — parameter validation and clamping.
@@ -107,7 +107,7 @@ Every registered CodeGraph tool goes through the same readiness wrapper before i
 
 ```text
 tool execute
-  -> runtime.ensureReady(ctx, { signal, onProgress })
+  -> runtime.ensureReady(ctx, { signal })
       -> resolve root from ctx.cwd
       -> init if no root exists
       -> index if new or empty
@@ -236,7 +236,7 @@ All tool outputs are Markdown text in Pi’s standard text result envelope:
 }
 ```
 
-Outputs are bounded to roughly 50 KB. Both success and error paths are truncated. The extension avoids old MCP tool names such as `codegraph_search` in Pi-facing guidance.
+Outputs are bounded to roughly 50 KB. Both success and error paths are truncated. The extension avoids old prefixed MCP tool names in Pi-facing guidance.
 
 ### `search`
 
@@ -348,20 +348,18 @@ It handles both string and object-with-`summary` return shapes. The earlier prod
 
 Use `context` when the task is broad and you want CodeGraph to select relevant code areas.
 
-## Deferred `explore`
+### `explore`
 
-CodeGraph’s MCP server has an `explore` concept that returns related symbols, selected source slices, and relationship maps in one bounded call. That tool is intentionally deferred from this extension’s v1.
+Return source for several related symbols grouped by file, plus a relationship map, in one bounded call. This is the source-level follow-up to `context`: use `context` to discover what matters, then `explore` to inspect related source sections across files without looping over many `node` or `read` calls.
 
-Reasons:
+Parameters:
 
-- It reads source files directly.
-- It requires root-containment safety checks.
-- It clusters nodes by file and line proximity.
-- It has adaptive output budgets based on project size.
-- It formats relationship maps and source snippets.
-- It is significantly more complex than the other tools.
+- `query` — required compact symbol names, file names, or short code terms. Good: `AuthService loginUser createSession`, `GraphTraverser BFS traversal.ts`. Use `context` first for broad natural-language questions and `search` first when you still need symbol names.
+- `maxFiles` — optional file cap. If omitted, the default is adaptive by indexed project size; explicit values are clamped 1..20.
 
-Do not register a placeholder `explore` tool. Add it only when the full implementation is ready, including tests for source read safety, output budgets, and no stale MCP-name guidance.
+The implementation is a Pi-native port of CodeGraph MCP `explore`, but it uses only public SDK methods. It calls `findRelevantContext`, groups relevant nodes by file, builds a relationship map, safely reads source files under the active project root, clusters nearby source ranges, adds line numbers by default, and applies per-file and total adaptive output budgets.
+
+Use `explore` for multi-file source surveys such as route handler → service → repository, component → hook → store, or controller → helper chains. Use `node` instead when you only need one symbol. Use `read` after `explore` when you need exact full-file context, nearby unrelated code, or edit-ready verification.
 
 ## Output and error behavior
 
@@ -406,7 +404,7 @@ The current test suite uses `tsx --test` and covers:
 
 - package/extension registration
 - command registration: `/cg:status`, `/cg:uninit`, no `/cg:init`
-- tool registration: seven MVP tools, no `explore`
+- tool registration: eight CodeGraph tools including `explore`
 - active-path-only schemas with no `projectPath`
 - root discovery from subdirectories
 - initialization at `ctx.cwd`
@@ -423,11 +421,12 @@ The current test suite uses `tsx --test` and covers:
 - uninit confirmation, force, non-interactive refusal, and in-flight races
 - real CodeGraph fixture coverage for `search` and `files`
 - real type-alias search kind mapping (`type` -> `type_alias`)
-- representative output for `node`, `callers`, `callees`, `impact`, and `context`
+- representative output for `node`, `callers`, `callees`, `impact`, `context`, and `explore`
+- `explore` source grouping, relationship formatting, path-escape safety, and adaptive-budget truncation
 - bounded success and error output
 - no MCP-style `codegraph_*` names in registered metadata
 
-The suite intentionally uses fakes for rare runtime failure states such as lock-skipped sync and mid-index cancellation. It uses real temporary CodeGraph projects for the most important SDK/package/assets path: indexing and querying `search`/`files`.
+The suite intentionally uses fakes for rare runtime failure states such as lock-skipped sync, mid-index cancellation, and deterministic `explore` graph shapes. It uses real temporary CodeGraph projects for the most important SDK/package/assets path: indexing and querying `search`/`files`.
 
 ## Operational limitations and tradeoffs
 
@@ -455,7 +454,7 @@ The extension does not work around CodeGraph’s known git fast-path limitation 
 
 ### Source exposure is intentional
 
-`node(includeCode=true)` and `context(includeCode=true)` can place local source code into model context. This is the purpose of the extension, but it means the trust boundary is the active Pi workspace. There is no per-call source disclosure prompt.
+`node(includeCode=true)`, `context(includeCode=true)`, and `explore` can place local source code into model context. This is the purpose of the extension, but it means the trust boundary is the active Pi workspace. There is no per-call source disclosure prompt.
 
 ## Future npm SDK migration
 
@@ -480,8 +479,8 @@ Do not fix SDK export differences by deep-importing private CodeGraph source fil
 
 High-value follow-ups:
 
-- Implement `explore` with full source-slicing, relationship-map, containment, and adaptive-budget tests.
-- Add real CodeGraph fixture tests for `callers`, `callees`, and `impact` relationship directionality.
+- Add real CodeGraph fixture tests for `callers`, `callees`, `impact`, and `explore` relationship directionality.
+- Add real fixture coverage for `explore` against framework/template-heavy files if needed.
 - Add real `node(includeCode=true)` fixture tests for leaf source and container outline behavior.
 - Improve zero-file recovery with an explicit reset trigger when new supported files appear.
 - Add a persisted full-index completion marker if crash recovery becomes important.

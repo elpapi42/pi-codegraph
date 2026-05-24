@@ -46,7 +46,7 @@ function containsKey(value: unknown, key: string): boolean {
   });
 }
 
-test("extension shell registers shutdown cleanup, commands, and MVP tools", () => {
+test("extension shell registers shutdown cleanup, commands, and tools", () => {
   const fake = createFakePi();
 
   piCodegraph(fake.pi as never);
@@ -59,12 +59,12 @@ test("extension shell registers shutdown cleanup, commands, and MVP tools", () =
     "callees",
     "callers",
     "context",
+    "explore",
     "files",
     "impact",
     "node",
     "search",
   ]);
-  assert.equal(fake.tools.some((tool) => tool.name === "explore"), false);
 });
 
 test("tool schemas are active-path-only and do not expose projectPath", () => {

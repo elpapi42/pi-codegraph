@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { CodeGraphInstance, Edge, FileRecord, Node } from "./codegraph-sdk.js";
 import type { CodeGraphRuntime } from "./runtime.js";
+import { runExplore } from "./explore.js";
 import { matchesPathPrefix, globToRegex } from "./paths.js";
 import { errorResult, textResult, type PiTextToolResult } from "./result.js";
 import { findAllSymbols, findSymbol } from "./symbols.js";
@@ -75,6 +76,11 @@ const ContextParams = Type.Object({
   includeCode: Type.Optional(Type.Boolean({ description: "Include code snippets for key symbols. Default true.", default: true })),
 });
 
+const ExploreParams = Type.Object({
+  query: Type.String({ description: "Symbol names, file names, or short code terms to explore, e.g. \"AuthService loginUser session-manager\" or \"GraphTraverser BFS traversal.ts\". Use context first for broad natural-language questions and search first if you need relevant names." }),
+  maxFiles: Type.Optional(Type.Number({ description: "Maximum number of files to include source code from. Defaults adaptively by project size, clamped 1..20." })),
+});
+
 interface CodeGraphToolSpec<TParams extends TSchema> {
   name: string;
   label: string;
@@ -138,6 +144,24 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
     ],
     parameters: ContextParams,
     run: runContext,
+  });
+
+  registerCodeGraphTool(pi, runtime, {
+    name: "explore",
+    label: "Explore Related Source",
+    description: "Return source for several related symbols grouped by file, plus a relationship map, in one capped call. Use after context when you need to inspect actual source for multiple related symbols; prefer it over a series of node or read calls. Query with specific symbol names, file names, or short code terms, not broad natural-language sentences.",
+    promptSnippet: "explore: inspect related source sections across files in one capped call, grouped by file with relationships.",
+    promptGuidelines: [
+      "Use `explore` after `context` when you need source code for several related symbols or files in one result.",
+      "Use `explore` with compact symbol, file, or code terms such as `AuthService loginUser createSession` rather than broad natural-language questions.",
+      "Use `explore` instead of looping over many `node` or `read` calls when surveying a related source cluster.",
+      "Use `search` before `explore` if you need to discover the relevant symbol names first.",
+      "Use `node` instead of `explore` when you only need one symbol's signature, metadata, or source.",
+      "Use `explore` to inspect multi-file flows such as route handler → service → repository, component → hook → store, or controller → helper chains.",
+      "Use `read` after `explore` only when you need exact full-file context, nearby unrelated code, or edit-ready source verification.",
+    ],
+    parameters: ExploreParams,
+    run: runExplore,
   });
 
   registerCodeGraphTool(pi, runtime, {
@@ -248,6 +272,8 @@ function formatToolCall(toolName: string, args: Record<string, unknown> | undefi
       return joinCallParts(title, formatPrimary(params.query, theme), formatOptional("kind", params.kind, theme), formatOptional("limit", params.limit, theme));
     case "context":
       return joinCallParts(title, formatPrimary(params.task, theme), formatOptional("nodes", params.maxNodes, theme), params.includeCode === false ? theme.fg("dim", "no-code") : undefined);
+    case "explore":
+      return joinCallParts(title, formatPrimary(params.query, theme), formatOptional("files", params.maxFiles, theme));
     case "files":
       return joinCallParts(
         title,

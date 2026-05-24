@@ -9,11 +9,11 @@ It is built for the common agent workflow: before answering code-navigation ques
 - A Pi-native extension surface over the CodeGraph TypeScript SDK.
 - Active-workspace-only exploration from Pi's current `ctx.cwd`.
 - Automatic CodeGraph initialization, indexing, and syncing before tool queries.
-- Seven MVP tools: `search`, `context`, `callers`, `callees`, `impact`, `node`, and `files`.
+- Eight code-intelligence tools: `search`, `context`, `explore`, `callers`, `callees`, `impact`, `node`, and `files`.
 - Two management commands: `/cg:status` and `/cg:uninit`.
 - Bounded Markdown results designed for agent context, not terminal UI output.
 
-It does **not** shell out to the CodeGraph CLI, start the CodeGraph MCP server, import private `codegraph/src/*` internals, expose `projectPath`, register `/cg:init`, or register `explore` yet.
+It does **not** shell out to the CodeGraph CLI, start the CodeGraph MCP server, import private `codegraph/src/*` internals, expose `projectPath`, or register `/cg:init`.
 
 ## Current status
 
@@ -23,7 +23,7 @@ That means a fresh clone must initialize and build the `./codegraph` submodule b
 
 ## Prerequisites
 
-- Node.js `>=20 <25`.
+- Node.js `>=22.19.0 <25`.
 - Pi installed locally.
 - Git submodules available in your clone workflow.
 - The `./codegraph` submodule initialized and built before installing or typechecking this extension.
@@ -126,9 +126,16 @@ Analyze reverse dependency impact radius for a symbol. The tool resolves matchin
 
 Build broad task context for the active project using CodeGraph's context builder. It accepts a natural-language task and returns Markdown context. The v1 implementation intentionally does not add product-opinionated reminder text beyond CodeGraph's own output.
 
-### Deferred: `explore`
+### `explore`
 
-`explore` is intentionally not registered in v1. It needs safe source reads, containment checks, line slicing, relationship maps, clustering, and adaptive output budgets before it should be exposed. Until that complete implementation exists, leaving it unregistered is safer than shipping a partial placeholder.
+Return source for several related symbols grouped by file, plus a relationship map, in one capped call. Use it after `context` when you need to inspect actual source for multiple related symbols, or when a flow spans several files and many separate `node`/`read` calls would be wasteful.
+
+Inputs:
+
+- `query`: compact symbol names, file names, or short code terms such as `AuthService loginUser createSession`; use `context` first for broad natural-language questions and `search` first if you need relevant names.
+- `maxFiles`: optional cap on files to include; defaults adaptively by project size and is clamped `1..20`.
+
+`explore` reads source files directly after validating indexed paths stay inside the active project root. Output is line-numbered by default, uses per-file and total adaptive budgets, and may include trimmed sections with guidance to use `node` or `read` for exact full-source detail.
 
 ## Commands
 
@@ -203,12 +210,12 @@ npm run test --loglevel verbose
 The test suite covers:
 
 - extension registration,
-- absence of `projectPath`, `/cg:init`, startup readiness, and `explore`,
+- absence of `projectPath`, `/cg:init`, and startup readiness,
 - runtime root resolution and readiness transitions,
 - failure paths such as zero-file indexing and lock-skipped sync,
 - `/cg:status` and `/cg:uninit` behavior,
 - real CodeGraph fixture tests for `search` and `files`,
-- representative symbol/context tool outputs,
+- representative symbol/context/explore tool outputs,
 - truncation and MCP-name leak prevention.
 
 ## Known limitations
@@ -217,8 +224,8 @@ The test suite covers:
 - First tool call in a large unindexed repository may take time while CodeGraph indexes.
 - Crash recovery after process death mid-index is best effort; there is no persisted “full index completed” marker yet.
 - Nested git subrepo sync limitations are accepted as-is for v1.
-- `node(includeCode: true)` and `context(includeCode: true)` intentionally expose local source code to the agent context.
-- Real fixture coverage currently focuses on `search` and `files`; deeper traversal tools have representative tests but not exhaustive real relationship fixtures.
+- `node(includeCode: true)`, `context(includeCode: true)`, and `explore` intentionally expose local source code to the agent context.
+- Real fixture coverage currently focuses on `search` and `files`; deeper traversal and explore behavior have representative tests but not exhaustive real relationship fixtures.
 
 ## Contributing and future work
 
@@ -227,9 +234,9 @@ High-value follow-ups:
 - Migrate to a published importable CodeGraph SDK package when available.
 - Add real relationship fixture tests for `callers`, `callees`, and `impact`.
 - Add real `context` fixture coverage if CodeGraph context behavior stabilizes enough for deterministic assertions.
-- Implement and register `explore` only after safe source slicing, relationship maps, and adaptive budgets are complete.
+- Add real relationship fixture tests for `explore` once CodeGraph relationship extraction is deterministic enough for stable assertions.
 - Consider a persisted full-index completion marker for stronger crash recovery.
-- Split `src/tools.ts` before adding more complex tools.
+- Split more tool implementations out of `src/tools.ts` if future tools add comparable complexity.
 
 ## More documentation
 
