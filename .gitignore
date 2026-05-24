@@ -142,9 +142,6 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
-# Local CodeGraph checkout used by the file:./codegraph development dependency
-codegraph
-
 # Local generated code index
 .codegraph
 

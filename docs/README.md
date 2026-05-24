@@ -48,7 +48,7 @@ The runtime does not guess git roots. If the user starts Pi in a subdirectory wi
 
 ## Current dependency model
 
-The current implementation depends on the local CodeGraph checkout inside this repository:
+The current implementation depends on CodeGraph as a Git submodule inside this repository:
 
 ```json
 {
@@ -58,13 +58,14 @@ The current implementation depends on the local CodeGraph checkout inside this r
 }
 ```
 
-This is necessary because the published `@colbymchenry/codegraph` package checked during implementation was a CLI launcher shim, not a stable importable SDK package. The local `./codegraph` package exports the SDK surface this extension needs from the package root.
+This is necessary because the published `@colbymchenry/codegraph` package checked during implementation was a CLI launcher shim, not a stable importable SDK package. The `./codegraph` submodule exports the SDK surface this extension needs from the package root.
 
-Because the dependency is a local file dependency, setup requires the local CodeGraph package to exist and be built before `pi-codegraph` can typecheck or run.
+Because the dependency is a local file dependency, setup requires the CodeGraph submodule to be initialized and built before `pi-codegraph` can typecheck or run.
 
 ```bash
+git submodule update --init --recursive
 cd codegraph
-npm install
+npm install --no-package-lock
 npm run build
 cd ..
 npm install
@@ -432,17 +433,13 @@ The suite intentionally uses fakes for rare runtime failure states such as lock-
 
 ### Local dependency is not release-packaging-safe
 
-`file:./codegraph` plus an ignored `codegraph/` directory is suitable for local development, but it is not a self-contained package distribution model. A fresh checkout or CI environment must provide and build `./codegraph` before installing `pi-codegraph`.
+`file:./codegraph` plus a Git submodule is suitable for near-term development and onboarding, but it is still not a normal npm package distribution model. A fresh checkout or CI environment must initialize and build the `./codegraph` submodule before installing `pi-codegraph`.
 
-Before publishing or sharing this extension broadly, choose one of these paths:
-
-- migrate to a real npm SDK package when available;
-- make `codegraph/` a submodule or workspace dependency;
-- keep it as an explicit local prerequisite and document setup carefully.
+Before publishing this extension as a normal package, migrate to a real npm SDK package when available or intentionally keep the submodule workflow documented for contributors.
 
 ### First tool call can be slow
 
-The first CodeGraph tool call in an uninitialized project can run a full index. Large repositories can take longer than a typical tool query. Progress updates are sent through Pi tool updates, but the call is still blocking from the tool’s perspective.
+The first CodeGraph tool call in an uninitialized project can run a full index. Large repositories can take longer than a typical tool query. The call is blocking from the tool’s perspective; v1 intentionally avoids streaming progress updates to keep Pi tool rendering stable.
 
 ### Zero-file blocking is process-lifetime behavior
 
@@ -488,4 +485,4 @@ High-value follow-ups:
 - Add real `node(includeCode=true)` fixture tests for leaf source and container outline behavior.
 - Improve zero-file recovery with an explicit reset trigger when new supported files appear.
 - Add a persisted full-index completion marker if crash recovery becomes important.
-- Decide the long-term dependency model before packaging or CI: npm SDK, submodule/workspace, or explicit local prerequisite.
+- Decide the long-term dependency model before package publishing: npm SDK or continued submodule workflow.

@@ -17,16 +17,18 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.75.5",
     "@earendil-works/pi-coding-agent": "^0.75.5",
+    "@earendil-works/pi-tui": "^0.75.5",
     "@types/node": "^20.19.25",
     "tsx": "^4.22.3",
     "typescript": "^5.9.3"
   },
   "engines": {
-    "node": ">=20.0.0 <25.0.0"
+    "node": ">=22.19.0 <25.0.0"
   }
 }

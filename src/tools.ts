@@ -1,5 +1,6 @@
 import { Type, type Static, type TSchema } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import type { CodeGraphInstance, Edge, FileRecord, Node } from "./codegraph-sdk.js";
 import type { CodeGraphRuntime } from "./runtime.js";
 import { matchesPathPrefix, globToRegex } from "./paths.js";
@@ -220,6 +221,11 @@ export function registerCodeGraphTool<TParams extends TSchema>(
     promptSnippet: spec.promptSnippet,
     promptGuidelines: spec.promptGuidelines,
     parameters: spec.parameters,
+    renderCall(args, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      text.setText(formatToolCall(spec.name, args, theme));
+      return text;
+    },
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
       try {
         const cg = await runtime.ensureReady(ctx, { signal });
@@ -231,6 +237,62 @@ export function registerCodeGraphTool<TParams extends TSchema>(
       }
     },
   });
+}
+
+function formatToolCall(toolName: string, args: Record<string, unknown> | undefined, theme: ToolCallTheme): string {
+  const title = theme.fg("toolTitle", theme.bold(toolName));
+  const params = args ?? {};
+
+  switch (toolName) {
+    case "search":
+      return joinCallParts(title, formatPrimary(params.query, theme), formatOptional("kind", params.kind, theme), formatOptional("limit", params.limit, theme));
+    case "context":
+      return joinCallParts(title, formatPrimary(params.task, theme), formatOptional("nodes", params.maxNodes, theme), params.includeCode === false ? theme.fg("dim", "no-code") : undefined);
+    case "files":
+      return joinCallParts(
+        title,
+        params.path ? formatPrimary(params.path, theme, { quote: false }) : undefined,
+        params.pattern ? formatPrimary(params.pattern, theme) : undefined,
+        typeof params.format === "string" ? theme.fg("dim", params.format) : undefined,
+        formatOptional("depth", params.maxDepth, theme),
+        params.includeMetadata === false ? theme.fg("dim", "no-meta") : undefined,
+      );
+    case "node":
+      return joinCallParts(title, formatPrimary(params.symbol, theme, { quote: false }), params.includeCode === true ? theme.fg("dim", "+code") : undefined);
+    case "callers":
+    case "callees":
+      return joinCallParts(title, formatPrimary(params.symbol, theme, { quote: false }), formatOptional("limit", params.limit, theme));
+    case "impact":
+      return joinCallParts(title, formatPrimary(params.symbol, theme, { quote: false }), formatOptional("depth", params.depth, theme));
+    default:
+      return title;
+  }
+}
+
+interface ToolCallTheme {
+  fg(style: string, text: string): string;
+  bold(text: string): string;
+}
+
+function joinCallParts(...parts: Array<string | undefined>): string {
+  return parts.filter((part): part is string => Boolean(part)).join(" ");
+}
+
+function formatPrimary(value: unknown, theme: ToolCallTheme, options: { quote?: boolean } = {}): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  const truncated = truncateCallValue(value);
+  const quote = options.quote ?? true;
+  return theme.fg("accent", quote ? JSON.stringify(truncated) : truncated);
+}
+
+function formatOptional(label: string, value: unknown, theme: ToolCallTheme): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return theme.fg("dim", `${label}=${String(value)}`);
+}
+
+function truncateCallValue(value: string, maxLength = 80): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
 function runSearch(cg: CodeGraphInstance, params: Static<typeof SearchParams>): string {

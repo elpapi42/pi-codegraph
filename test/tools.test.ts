@@ -11,6 +11,7 @@ import { errorResult, textResult } from "../src/result.js";
 interface RegisteredTool {
   name: string;
   parameters?: unknown;
+  renderCall?: (args: Record<string, unknown>, theme: FakeTheme, context: { lastComponent?: unknown }) => { render(width: number): string[] };
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
@@ -18,6 +19,21 @@ interface RegisteredTool {
     onUpdate: ((update: unknown) => void) | undefined,
     ctx: { cwd: string },
   ) => Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean; details?: Record<string, unknown> }>;
+}
+
+interface FakeTheme {
+  fg: (style: string, text: string) => string;
+  bold: (text: string) => string;
+}
+
+const fakeTheme: FakeTheme = {
+  fg: (_style, text) => text,
+  bold: (text) => text,
+};
+
+function renderToolCall(tool: RegisteredTool, args: Record<string, unknown>): string {
+  assert.ok(tool.renderCall, `${tool.name} should define renderCall`);
+  return tool.renderCall(args, fakeTheme, {}).render(200).join("\n").trim();
 }
 
 function createFakePi() {
@@ -257,6 +273,27 @@ test("symbol misses are normal non-error markdown results", async () => {
 
   assert.equal(result.isError, undefined);
   assert.match(result.content[0]?.text ?? "", /not found/);
+});
+
+test("tool call renderer shows compact parameters in the header", () => {
+  const tools = registerWithGraph(createSymbolGraph());
+
+  assert.equal(renderToolCall(getTool(tools, "search"), { query: "auth", kind: "function", limit: 25 }), "search \"auth\" kind=function limit=25");
+  assert.equal(renderToolCall(getTool(tools, "context"), { task: "fix login redirect bug", maxNodes: 30, includeCode: false }), "context \"fix login redirect bug\" nodes=30 no-code");
+  assert.equal(renderToolCall(getTool(tools, "files"), { path: "src", pattern: "**/*.tsx", format: "tree", maxDepth: 3, includeMetadata: false }), "files src \"**/*.tsx\" tree depth=3 no-meta");
+  assert.equal(renderToolCall(getTool(tools, "node"), { symbol: "AuthService.login", includeCode: true }), "node AuthService.login +code");
+  assert.equal(renderToolCall(getTool(tools, "callers"), { symbol: "loginUser", limit: 50 }), "callers loginUser limit=50");
+  assert.equal(renderToolCall(getTool(tools, "callees"), { symbol: "handleWebhook", limit: 50 }), "callees handleWebhook limit=50");
+  assert.equal(renderToolCall(getTool(tools, "impact"), { symbol: "UserService.update", depth: 3 }), "impact UserService.update depth=3");
+});
+
+test("tool call renderer truncates long primary values", () => {
+  const tools = registerWithGraph(createSymbolGraph());
+  const rendered = renderToolCall(getTool(tools, "search"), { query: "a".repeat(120) });
+
+  assert.match(rendered, /^search "/);
+  assert.match(rendered, /…"$/);
+  assert.ok(rendered.length < 100);
 });
 
 test("tool wrapper ignores progress updates and returns one final result", async () => {

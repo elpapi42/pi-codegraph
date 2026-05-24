@@ -17,24 +17,25 @@ It does **not** shell out to the CodeGraph CLI, start the CodeGraph MCP server, 
 
 ## Current status
 
-This project is currently local-development oriented. The extension is implemented and tested, but it depends on a local CodeGraph checkout at `./codegraph` because the published `@colbymchenry/codegraph` package available during implementation was a CLI launcher shim rather than a stable importable SDK package.
+This project is currently local-development oriented. The extension is implemented and tested, but it depends on CodeGraph as a Git submodule at `./codegraph` because the published `@colbymchenry/codegraph` package available during implementation was a CLI launcher shim rather than a stable importable SDK package.
 
-That means a fresh clone must provide and build `./codegraph` before `pi-codegraph` can be installed or run. Once CodeGraph publishes an importable SDK package, this project should migrate from `file:./codegraph` to a normal semver dependency.
+That means a fresh clone must initialize and build the `./codegraph` submodule before `pi-codegraph` can be installed or run. Once CodeGraph publishes an importable SDK package, this project should migrate from `file:./codegraph` to a normal semver dependency.
 
 ## Prerequisites
 
 - Node.js `>=20 <25`.
 - Pi installed locally.
-- A local CodeGraph checkout at `./codegraph`.
-- CodeGraph built before installing or typechecking this extension.
+- Git submodules available in your clone workflow.
+- The `./codegraph` submodule initialized and built before installing or typechecking this extension.
 
 ## Quick start for development
 
 From the repository root:
 
 ```bash
+git submodule update --init --recursive
 cd codegraph
-npm install
+npm install --no-package-lock
 npm run build
 cd ..
 npm install
@@ -62,7 +63,7 @@ For project or user-level installation, configure Pi to load this package as an 
 }
 ```
 
-Because this package currently depends on `file:./codegraph`, it is not yet suitable as a self-contained npm install unless the local CodeGraph checkout is present in the same layout.
+Because this package currently depends on `file:./codegraph`, it is not yet suitable as a self-contained npm install unless the CodeGraph submodule is present and built in the same layout.
 
 ## Active-path-only behavior
 
@@ -212,7 +213,7 @@ The test suite covers:
 
 ## Known limitations
 
-- The local `file:./codegraph` dependency is not a release-grade packaging model.
+- The local `file:./codegraph` submodule dependency is not a release-grade packaging model.
 - First tool call in a large unindexed repository may take time while CodeGraph indexes.
 - Crash recovery after process death mid-index is best effort; there is no persisted “full index completed” marker yet.
 - Nested git subrepo sync limitations are accepted as-is for v1.
