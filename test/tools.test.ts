@@ -52,6 +52,17 @@ class StaticRuntime {
   async closeAll() {}
 }
 
+class ProgressRuntime {
+  constructor(private readonly graph: unknown) {}
+
+  async ensureReady(_ctx: unknown, options?: { onProgress?: (message: string) => void }) {
+    options?.onProgress?.("CodeGraph: indexing /repo");
+    return this.graph;
+  }
+
+  async closeAll() {}
+}
+
 function makeNode(overrides: Record<string, unknown>) {
   return {
     id: "node-1",
@@ -246,6 +257,25 @@ test("symbol misses are normal non-error markdown results", async () => {
 
   assert.equal(result.isError, undefined);
   assert.match(result.content[0]?.text ?? "", /not found/);
+});
+
+test("tool wrapper ignores progress updates and returns one final result", async () => {
+  const fake = createFakePi();
+  registerTools(fake.pi as never, new ProgressRuntime(createSymbolGraph()) as unknown as CodeGraphRuntime);
+  const updates: unknown[] = [];
+
+  const result = await getTool(fake.tools, "search").execute(
+    "tool-call",
+    { query: "loginUser" },
+    new AbortController().signal,
+    (update) => updates.push(update),
+    { cwd: "/repo" },
+  );
+
+  assert.deepEqual(updates, []);
+  assert.equal(result.content[0]?.type, "text");
+  assert.match(result.content[0]?.text ?? "", /loginUser/);
+  assert.equal(result.details?.tool, "search");
 });
 
 test("tool output is truncated and marks details when over budget", () => {

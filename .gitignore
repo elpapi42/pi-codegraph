@@ -145,5 +145,8 @@ vite.config.ts.timestamp-*
 # Local CodeGraph checkout used by the file:./codegraph development dependency
 codegraph
 
+# Local generated code index
+.codegraph
+
 # Local planning artifacts
 openspec

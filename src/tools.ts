@@ -9,7 +9,7 @@ import { clampNumber, optionalBoolean, optionalPath, optionalString, requiredStr
 
 const SearchParams = Type.Object({
   query: Type.String({
-    description: "Symbol name or partial name in the active project, e.g. auth, signIn, UserService.",
+    description: "Symbol name or partial name, e.g. \"auth\", \"signIn\", \"UserService\". Use compact symbol-like terms, not broad natural-language questions.",
   }),
   kind: Type.Optional(Type.Union([
     Type.Literal("function"),
@@ -21,55 +21,55 @@ const SearchParams = Type.Object({
     Type.Literal("route"),
     Type.Literal("component"),
   ], {
-    description: "Optional node kind filter.",
+    description: "Filter by symbol kind. Values: function, method, class, interface, type, variable, route, component.",
   })),
   limit: Type.Optional(Type.Number({
-    description: "Maximum results. Default 10, clamped 1..100.",
+    description: "Maximum symbol matches to return. Default 10, clamped 1..100.",
     default: 10,
   })),
 });
 
 const FilesParams = Type.Object({
   path: Type.Optional(Type.String({
-    description: "Filter to indexed files under this directory within the active project, e.g. src/components.",
+    description: "Filter to indexed files under this project-relative directory path, e.g. \"src/components\". Returns all indexed files if omitted; does not select another project.",
   })),
   pattern: Type.Optional(Type.String({
-    description: "Glob-like filter within the active project, e.g. *.tsx or **/*.test.ts.",
+    description: "Filter files matching this glob pattern against full project-relative paths, e.g. \"*.tsx\" or \"**/*.test.ts\"; use \"**/*.ts\" for recursive matches.",
   })),
   format: Type.Optional(Type.Union([
     Type.Literal("tree"),
     Type.Literal("flat"),
     Type.Literal("grouped"),
   ], {
-    description: "Output format. Default tree.",
+    description: "Output format. Values: tree (hierarchical, default), flat (simple list), grouped (by language).",
     default: "tree",
   })),
   includeMetadata: Type.Optional(Type.Boolean({
-    description: "Include language and symbol count. Default true.",
+    description: "Include file metadata such as language and indexed symbol count. Default true.",
     default: true,
   })),
   maxDepth: Type.Optional(Type.Number({
-    description: "Maximum directory depth for tree output. Default unlimited, clamped 1..20.",
+    description: "Maximum directory depth to show for tree output. Default unlimited, clamped 1..20.",
   })),
 });
 
 const SymbolLimitParams = Type.Object({
-  symbol: Type.String({ description: "Symbol name in the active project." }),
-  limit: Type.Optional(Type.Number({ description: "Maximum results. Default 20, clamped 1..100.", default: 20 })),
+  symbol: Type.String({ description: "Name of the function, method, class, component, route, or other symbol to inspect. Qualified names and path-like symbol hints are allowed." }),
+  limit: Type.Optional(Type.Number({ description: "Maximum number of matching references to return. Default 20, clamped 1..100.", default: 20 })),
 });
 
 const ImpactParams = Type.Object({
-  symbol: Type.String({ description: "Symbol to analyze impact for in the active project." }),
-  depth: Type.Optional(Type.Number({ description: "Reverse dependency depth. Default 2, clamped 1..10.", default: 2 })),
+  symbol: Type.String({ description: "Name of the symbol to analyze impact for. Qualified names and path-like symbol hints are allowed." }),
+  depth: Type.Optional(Type.Number({ description: "How many levels of reverse dependencies to traverse. Default 2, clamped 1..10.", default: 2 })),
 });
 
 const NodeParams = Type.Object({
-  symbol: Type.String({ description: "Symbol name to inspect in the active project." }),
-  includeCode: Type.Optional(Type.Boolean({ description: "Include source code. Default false.", default: false })),
+  symbol: Type.String({ description: "Name of the symbol to get details for. Qualified names and path-like symbol hints are allowed." }),
+  includeCode: Type.Optional(Type.Boolean({ description: "Include source code. Default false to minimize context; functions/methods return bodies, while classes/interfaces/structs/enums return compact member outlines instead of every method body.", default: false })),
 });
 
 const ContextParams = Type.Object({
-  task: Type.String({ description: "Task, bug, or feature description for the active project." }),
+  task: Type.String({ description: "Description of the task, bug, feature, architecture question, or behavior to build code context for. Natural language is appropriate here." }),
   maxNodes: Type.Optional(Type.Number({ description: "Maximum symbols to include. Default 20, clamped 1..200.", default: 20 })),
   includeCode: Type.Optional(Type.Boolean({ description: "Include code snippets for key symbols. Default true.", default: true })),
 });
@@ -87,59 +87,122 @@ interface CodeGraphToolSpec<TParams extends TSchema> {
 export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void {
   registerCodeGraphTool(pi, runtime, {
     name: "search",
-    label: "Search CodeGraph",
-    description: "Search indexed symbols by name or partial name in the active project. Returns locations and signatures, not source code.",
-    promptSnippet: "search: search indexed symbols in the active project by name.",
+    label: "Search Symbols",
+    description: "Quick symbol search by name or partial name. Use to locate known or likely functions, methods, classes, interfaces, components, routes, types, or variables before reading files or inspecting a symbol. Returns matching symbols with locations and signatures only, not source code. Use context instead for broad natural-language task or architecture questions.",
+    promptSnippet: "search: quick symbol search by name or partial name; returns locations and signatures, not source code.",
+    promptGuidelines: [
+      "Use `search` to find a known function, method, class, component, route, type, variable, or interface by name.",
+      "Use `search` with a compact domain term like `auth`, `billing`, `webhook`, or `settings` to find likely entry symbols.",
+      "Use `search` to disambiguate similarly named symbols before choosing one to inspect or edit.",
+      "Use `search` before `node`, `callers`, `callees`, or `impact` when you need to identify the exact symbol first.",
+      "Use `search` with the `kind` parameter to narrow results to values such as `component`, `route`, `class`, or `function`.",
+      "Use `search` to check whether a symbol already exists before adding new code.",
+      "Use `search` to find framework entry points such as handlers, routes, hooks, controllers, or services.",
+    ],
     parameters: SearchParams,
     run: runSearch,
   });
 
   registerCodeGraphTool(pi, runtime, {
     name: "files",
-    label: "CodeGraph Files",
-    description: "List indexed file structure for the active project. Supports tree, flat, and grouped output.",
-    promptSnippet: "files: list indexed files in the active project.",
+    label: "Project Files",
+    description: "Required for file and folder exploration. Lists project file structure from the index with optional metadata such as language and symbol count. Much faster than filesystem scanning; use this first when exploring project structure, finding files, or understanding codebase organization.",
+    promptSnippet: "files: list indexed project files before choosing files to read.",
+    promptGuidelines: [
+      "Use `files` to understand project structure before reading files.",
+      "Use `files` with `path` to list indexed files under a directory such as `src/` or `src/components`.",
+      "Use `files` with `pattern` to find files such as `**/*.test.ts`, `**/*.tsx`, or `**/*config*`.",
+      "Use `files` with `format: \"tree\"` and `maxDepth` to get a high-level structure before deeper exploration.",
+      "Use `files` with `format: \"grouped\"` to understand the project's languages and broad repo shape.",
+      "Use `files` to verify whether expected files or directories are present in the active index.",
+      "Use `files` to diagnose empty or surprising `search` results by checking what the active index contains.",
+    ],
     parameters: FilesParams,
     run: runFiles,
   });
 
   registerCodeGraphTool(pi, runtime, {
     name: "context",
-    label: "CodeGraph Context",
-    description: "Build broad task context for the active project using CodeGraph semantic understanding.",
-    promptSnippet: "context: build task context for the active project.",
+    label: "Task Context",
+    description: "Primary tool for broad code understanding. Call this first for \"how does X work\", architecture, feature, or bug-context questions. Returns entry points, related symbols, and key code in one call; prefer it over chaining search plus node for broad discovery. Provides code context, not product requirements, so still clarify UX, edge cases, and acceptance criteria for new features.",
+    promptSnippet: "context: primary broad-discovery tool for architecture, feature, and bug-context questions.",
+    promptGuidelines: [
+      "Use `context` at the start of non-trivial work when the user describes a task, bug, feature, or architecture question.",
+      "Use `context` for broad questions like `how does auth work?` when you do not yet know the relevant symbol names.",
+      "Use `context` to get entry points, related symbols, and key code in one call.",
+      "Use `context` to explore an unfamiliar area before planning or editing.",
+      "Use `context` to locate likely implementation and test surfaces for a bug fix.",
+      "Use `context` for cross-cutting behavior that may span multiple files, layers, or product surfaces.",
+      "Use `context` instead of chaining many `search`, `node`, and `read` calls when broad discovery is needed.",
+    ],
     parameters: ContextParams,
     run: runContext,
   });
 
   registerCodeGraphTool(pi, runtime, {
     name: "callers",
-    label: "CodeGraph Callers",
-    description: "Find incoming callers/references for a symbol in the active project.",
+    label: "Symbol Callers",
+    description: "Find functions, methods, or other symbols that call or reference a specific symbol. Useful for understanding usage patterns, incoming dependencies, and direct impact of changes.",
+    promptGuidelines: [
+      "Use `callers` to find who calls or references a function, method, class, component, route, or other symbol before changing it.",
+      "Use `callers` to understand usage patterns and direct incoming dependencies.",
+      "Use `callers` to find call sites that may need updates after a signature or behavior change.",
+      "Use `callers` to identify tests or product flows that exercise a symbol.",
+      "Use `callers` to decide whether a symbol is internal, shared, or API-like.",
+      "Use `callers` to check whether code is unused or lightly used before deleting or refactoring it.",
+      "Use `callers` to find high-level entry points that reach a low-level helper.",
+    ],
     parameters: SymbolLimitParams,
     run: runCallers,
   });
 
   registerCodeGraphTool(pi, runtime, {
     name: "callees",
-    label: "CodeGraph Callees",
-    description: "Find outgoing calls/references from a symbol in the active project.",
+    label: "Symbol Callees",
+    description: "Find functions, methods, or other symbols that a specific symbol calls or references. Useful for understanding outgoing dependencies, implementation flow, and what code a symbol relies on.",
+    promptGuidelines: [
+      "Use `callees` to understand what a function, method, class, component, route, or other symbol calls or depends on.",
+      "Use `callees` to trace implementation flow inside a selected symbol.",
+      "Use `callees` to identify downstream services, repositories, helpers, hooks, or API calls.",
+      "Use `callees` to spot side effects such as database writes, file writes, network calls, telemetry, or emails.",
+      "Use `callees` to check whether a path performs auth, validation, error handling, or permission checks.",
+      "Use `callees` to understand dependencies before extracting or refactoring code.",
+      "Use `callees` together with `callers` to understand both incoming usage and outgoing dependencies.",
+    ],
     parameters: SymbolLimitParams,
     run: runCallees,
   });
 
   registerCodeGraphTool(pi, runtime, {
     name: "impact",
-    label: "CodeGraph Impact",
-    description: "Analyze reverse dependency impact radius for a symbol in the active project.",
+    label: "Change Impact",
+    description: "Analyze the impact radius of changing a symbol. Shows what code could be affected by modifications, including reverse dependencies beyond direct callers. Use before edits, refactors, or API/signature changes.",
+    promptGuidelines: [
+      "Use `impact` to check blast radius before changing a shared symbol.",
+      "Use `impact` to analyze likely affected symbols and files before refactors.",
+      "Use `impact` before renaming, deleting, moving, or changing signatures.",
+      "Use `impact` to find affected consumers beyond direct callers.",
+      "Use `impact` to plan tests and review scope for risky changes.",
+      "Use `impact` to decide whether a proposed fix is local or cross-cutting.",
+      "Use `impact` to compare alternative edit points by how much code each would affect.",
+    ],
     parameters: ImpactParams,
     run: runImpact,
   });
 
   registerCodeGraphTool(pi, runtime, {
     name: "node",
-    label: "CodeGraph Node",
-    description: "Inspect one symbol in the active project.",
+    label: "Symbol Details",
+    description: "Get detailed information about one symbol, including location, signature, and docstring when available. Pass includeCode=true for source: functions and methods return their body; classes, interfaces, structs, and enums return a compact member outline with fields, method signatures, and line numbers. Keep includeCode=false to minimize context; use context first for several related symbols.",
+    promptGuidelines: [
+      "Use `node` to inspect one symbol's location, signature, metadata, and docstring.",
+      "Use `node` with `includeCode: true` to get source for a specific function or method.",
+      "Use `node` with `includeCode: true` on a class, interface, module, or other container to get a compact outline instead of every body.",
+      "Use `node` to inspect a symbol found by `search` or `context`.",
+      "Use `node` to resolve ambiguity after multiple `search` results.",
+      "Use `node` to verify the exact implementation before editing.",
+      "Use `node` to inspect a specific symbol returned by `callers`, `callees`, or `impact` in more detail.",
+    ],
     parameters: NodeParams,
     run: runNode,
   });
@@ -157,12 +220,9 @@ export function registerCodeGraphTool<TParams extends TSchema>(
     promptSnippet: spec.promptSnippet,
     promptGuidelines: spec.promptGuidelines,
     parameters: spec.parameters,
-    execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
+    execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
       try {
-        const cg = await runtime.ensureReady(ctx, {
-          signal,
-          onProgress: (message) => onUpdate?.({ message } as never),
-        });
+        const cg = await runtime.ensureReady(ctx, { signal });
         const text = await spec.run(cg, params);
         return textResult(text, { tool: spec.name, projectRoot: cg.getProjectRoot() }) as never;
       } catch (error) {
