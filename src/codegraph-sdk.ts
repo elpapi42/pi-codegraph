@@ -21,9 +21,22 @@ function exportedFunction<K extends keyof CodeGraphPackage>(name: K): CodeGraphP
   return undefined;
 }
 
+function codeGraphCandidate(value: unknown): CodeGraphPackage["CodeGraph"] | undefined {
+  if (
+    typeof value === "function" &&
+    typeof (value as { init?: unknown }).init === "function" &&
+    typeof (value as { open?: unknown }).open === "function"
+  ) {
+    return value as CodeGraphPackage["CodeGraph"];
+  }
+
+  return undefined;
+}
+
 const resolvedCodeGraph =
-  exportedFunction("CodeGraph") ??
-  (typeof defaultExports === "function" ? (defaultExports as CodeGraphPackage["CodeGraph"]) : undefined);
+  codeGraphCandidate(namespaceExports.CodeGraph) ??
+  codeGraphCandidate(defaultObject?.CodeGraph) ??
+  codeGraphCandidate(defaultExports);
 const resolvedFindNearestCodeGraphRoot = exportedFunction("findNearestCodeGraphRoot");
 const resolvedIsInitialized = exportedFunction("isInitialized");
 
