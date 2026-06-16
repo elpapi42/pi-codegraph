@@ -1,4 +1,3 @@
-import os from "node:os";
 import path from "node:path";
 import {
   CodeGraph,
@@ -102,12 +101,7 @@ export function resolveCodeGraphRoot(
   const nearest = sdk.findNearestCodeGraphRoot(resolvedStart);
 
   if (nearest && sdk.isInitialized(nearest)) {
-    const resolvedNearest = path.resolve(nearest);
-    const resolvedHome = path.resolve(os.homedir());
-
-    if (resolvedNearest !== resolvedHome || resolvedStart === resolvedNearest) {
-      return { root: resolvedNearest, initialized: true };
-    }
+    return { root: nearest, initialized: true };
   }
 
   return { root: resolvedStart, initialized: false };

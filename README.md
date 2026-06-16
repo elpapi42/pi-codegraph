@@ -64,8 +64,8 @@ All tools operate on Pi's active working directory, `ctx.cwd`. There is no `proj
 Before every tool query, the runtime:
 
 1. Walks upward from `ctx.cwd` for the nearest `.codegraph/codegraph.db`.
-2. Opens that CodeGraph root if it exists and is not an inherited home-directory root.
-3. Initializes CodeGraph exactly at `ctx.cwd` if no usable parent root exists.
+2. Opens that CodeGraph root if it exists.
+3. Initializes CodeGraph exactly at `ctx.cwd` if no parent root exists.
 4. Runs `indexAll()` if the index is empty.
 5. Checks for changed files.
 6. Runs `sync()` if changes are pending.
