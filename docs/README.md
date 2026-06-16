@@ -47,32 +47,25 @@ The runtime does not guess git roots. If the user starts Pi in a subdirectory wi
 
 ## Current dependency model
 
-The current implementation depends on CodeGraph as a Git submodule inside this repository:
+The extension now depends on the published `@colbymchenry/codegraph` npm SDK package:
 
 ```json
 {
   "dependencies": {
-    "@colbymchenry/codegraph": "file:./codegraph"
+    "@colbymchenry/codegraph": "^1.0.1"
   }
 }
 ```
 
-This is necessary because the published `@colbymchenry/codegraph` package checked during implementation was a CLI launcher shim, not a stable importable SDK package. The `./codegraph` submodule exports the SDK surface this extension needs from the package root.
-
-Because the dependency is a local file dependency, setup requires the CodeGraph submodule to be initialized and built before `pi-codegraph` can typecheck or run.
+That means a normal install flow is enough for development and validation:
 
 ```bash
-git submodule update --init --recursive
-cd codegraph
-npm install --no-package-lock
-npm run build
-cd ..
 npm install
+npm run typecheck
+npm test
 ```
 
-The CodeGraph build step is not optional. CodeGraph’s package root points at `dist/`, and the build copies runtime assets such as `schema.sql` and tree-sitter WASM grammars. If those files are missing, SDK imports or indexing can fail even if TypeScript source exists.
-
-The extension imports CodeGraph only through `src/codegraph-sdk.ts`. That adapter is the migration seam for a future npm SDK release.
+The repository no longer carries a local CodeGraph clone for normal extension development. The extension still imports CodeGraph only through `src/codegraph-sdk.ts`. That adapter remains the package-boundary seam and now also normalizes the published package’s CommonJS/ESM export shape.
 
 ## Package and extension shape
 
@@ -430,11 +423,9 @@ The suite intentionally uses fakes for rare runtime failure states such as lock-
 
 ## Operational limitations and tradeoffs
 
-### Local dependency is not release-packaging-safe
+### Platform bundle delivery is now the packaging dependency
 
-`file:./codegraph` plus a Git submodule is suitable for near-term development and onboarding, but it is still not a normal npm package distribution model. A fresh checkout or CI environment must initialize and build the `./codegraph` submodule before installing `pi-codegraph`.
-
-Before publishing this extension as a normal package, migrate to a real npm SDK package when available or intentionally keep the submodule workflow documented for contributors.
+The npm SDK removes the old local-clone/build requirement, but install success now depends on npm delivering CodeGraph’s matching platform bundle. If the package loads incorrectly at runtime, the first check should be whether the platform-specific optional dependency was installed correctly for the current machine.
 
 ### First tool call can be slow
 
@@ -456,24 +447,16 @@ The extension does not work around CodeGraph’s known git fast-path limitation 
 
 `node(includeCode=true)`, `context(includeCode=true)`, and `explore` can place local source code into model context. This is the purpose of the extension, but it means the trust boundary is the active Pi workspace. There is no per-call source disclosure prompt.
 
-## Future npm SDK migration
+## Published npm SDK notes
 
-When `@colbymchenry/codegraph` publishes an importable SDK package, migration should be localized:
+The dependency migration is intentionally localized:
 
-1. Replace the local file dependency:
+1. `package.json` now uses the published semver dependency.
+2. `src/codegraph-sdk.ts` handles the published package’s CommonJS/ESM interop shape by reading named exports from the package default object.
+3. Runtime and tool logic continue to import only from the adapter; there are still no deep imports from CodeGraph internals.
+4. Validation remains the same: `npm run typecheck` and `npm test`.
 
-   ```diff
-   - "@colbymchenry/codegraph": "file:./codegraph"
-   + "@colbymchenry/codegraph": "^<sdk-version>"
-   ```
-
-2. Run `npm install`.
-3. Check `src/codegraph-sdk.ts` for export-name or CommonJS/ESM shape differences.
-4. Run `npm run typecheck`.
-5. Run `npm run test --loglevel verbose`.
-6. Run OpenSpec validation if the change is still governed by an active spec.
-
-Do not fix SDK export differences by deep-importing private CodeGraph source files. Keep the adapter as the only package-boundary seam.
+If a future CodeGraph release changes the export shape again, fix the adapter rather than reaching into private package internals.
 
 ## Future work
 
@@ -484,4 +467,3 @@ High-value follow-ups:
 - Add real `node(includeCode=true)` fixture tests for leaf source and container outline behavior.
 - Improve zero-file recovery with an explicit reset trigger when new supported files appear.
 - Add a persisted full-index completion marker if crash recovery becomes important.
-- Decide the long-term dependency model before package publishing: npm SDK or continued submodule workflow.
