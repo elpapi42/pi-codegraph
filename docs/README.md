@@ -41,9 +41,11 @@ There is no per-tool project selector and no cross-project query mode. If Pi is 
 Root resolution follows two rules:
 
 1. Walk upward from `ctx.cwd` to find the nearest initialized CodeGraph root containing `.codegraph/codegraph.db`.
-2. If no initialized root exists above `ctx.cwd`, initialize exactly at `ctx.cwd` when the first CodeGraph tool needs readiness.
+2. If no usable initialized root exists above `ctx.cwd`, initialize exactly at `ctx.cwd` when the first CodeGraph tool needs readiness.
 
-The runtime does not guess git roots. If the user starts Pi in a subdirectory with no parent `.codegraph/`, the extension treats that subdirectory as the active project root. This is intentional: Pi’s active path is the authority.
+A home-directory CodeGraph root is not inherited by child workspaces. If `~/.codegraph/` exists and Pi starts in `~/project-without-codegraph`, the extension initializes `~/project-without-codegraph` rather than syncing the entire home-directory index. Running Pi from the home directory itself still uses the home root.
+
+The runtime does not guess git roots. If the user starts Pi in a subdirectory with no usable parent `.codegraph/`, the extension treats that subdirectory as the active project root. This is intentional: Pi’s active path is the authority.
 
 ## Current dependency model
 

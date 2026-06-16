@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { CodeGraphRuntime, resolveCodeGraphRoot, type ChangedFiles, type CodeGraphSdk } from "../src/runtime.js";
@@ -147,6 +148,15 @@ test("resolveCodeGraphRoot walks upward to nearest initialized parent", () => {
   assert.deepEqual(resolveCodeGraphRoot(child, sdk), { root, initialized: true });
 });
 
+test("resolveCodeGraphRoot does not inherit a home-directory graph for child workspaces", () => {
+  const home = path.resolve(os.homedir());
+  const child = path.join(home, "project-without-codegraph");
+  const { sdk } = createSdk({ initializedRoots: [home] });
+
+  assert.deepEqual(resolveCodeGraphRoot(child, sdk), { root: child, initialized: false });
+  assert.deepEqual(resolveCodeGraphRoot(home, sdk), { root: home, initialized: true });
+});
+
 test("ensureReady initializes exactly at ctx.cwd when no parent root exists", async () => {
   const cwd = path.resolve("/workspace/subdir");
   const { sdk, counts, graphs } = createSdk();
@@ -158,6 +168,23 @@ test("ensureReady initializes exactly at ctx.cwd when no parent root exists", as
   assert.equal(counts.open, 0);
   assert.equal(graphs.get(cwd), graph);
   assert.equal((graph as unknown as FakeGraph).indexAllCalls, 1);
+});
+
+test("ensureReady initializes a child workspace instead of opening an initialized home root", async () => {
+  const home = path.resolve(os.homedir());
+  const cwd = path.join(home, "workspace-without-codegraph");
+  const homeGraph = new FakeGraph(home, 10);
+  const { sdk, counts, graphs } = createSdk({ initializedRoots: [home], graphs: new Map([[home, homeGraph]]) });
+  const runtime = new CodeGraphRuntime(sdk);
+
+  const graph = await runtime.ensureReady({ cwd });
+
+  assert.equal(counts.init, 1);
+  assert.equal(counts.open, 0);
+  assert.equal(graphs.get(cwd), graph);
+  assert.notEqual(graph, homeGraph);
+  assert.equal((graph as unknown as FakeGraph).indexAllCalls, 1);
+  assert.equal(homeGraph.syncCalls, 0);
 });
 
 test("ensureReady opens parent root and skips index/sync when already clean", async () => {
