@@ -184,7 +184,9 @@ test("uses exact file and line selectors and rejects unsafe selectors", () => {
   const active = node({ id: "active", name: "registerTools", filePath: "agent/extensions/pi-codegraph/src/tools.ts", startLine: 100 });
   const profile = node({ id: "profile", name: "registerTools", filePath: "profiles/fork/packages/pi-codegraph/src/tools.ts", startLine: 94 });
   const selectionGraph = {
-    searchNodes: () => [{ node: active, score: 1 }, { node: profile, score: 1 }], getCallers: () => [], getCallees: () => [],
+    searchNodes: () => [{ node: active, score: 1 }, { node: profile, score: 1 }],
+    getNodesInFile: (file: string) => file === active.filePath ? [active] : file === profile.filePath ? [profile] : [],
+    getCallers: () => [], getCallees: () => [],
     getImpactRadius: (id: string) => ({ nodes: new Map([[id, id === "active" ? active : profile]]), edges: [] }), findPath: () => null,
   };
   const output = runAnalyzeCode(selectionGraph as never, { target: { symbol: "registerTools", file: "agent/extensions/pi-codegraph/src/tools.ts", line: 100 } });
@@ -193,6 +195,59 @@ test("uses exact file and line selectors and rejects unsafe selectors", () => {
   assert.doesNotMatch(output, /profiles\/fork/);
   for (const file of ["/tmp/tools.ts", "../tools.ts", "src\\tools.ts", "src//tools.ts", "src/./tools.ts"]) assert.throws(() => runAnalyzeCode(selectionGraph as never, { target: { symbol: "registerTools", file } }), /safe project-relative path/);
   for (const line of [0, -1, 1.5, "1"]) assert.throws(() => runAnalyzeCode(selectionGraph as never, { target: { symbol: "registerTools", line } }), /positive integer/);
+});
+
+test("resolves file selectors locally before global candidate ranking", () => {
+  const target = node({ id: "target", name: "execute", qualifiedName: "ProcessEvent::execute", kind: "method", filePath: "src/ports/primary/processEvent.ts", startLine: 8 });
+  const related = node({ id: "related", name: "dispatch", qualifiedName: "EventBus::dispatch", kind: "method", filePath: "src/adapters/event-bus.ts", startLine: 12 });
+  const common = Array.from({ length: 51 }, (_, index) => node({ id: `common-${index}`, name: "execute", filePath: `src/common-${index}.ts`, startLine: index + 1 }));
+  let globalSearches = 0;
+  const selectorGraph = {
+    searchNodes() { globalSearches++; return common.map((item) => ({ node: item, score: 1 })); },
+    getNodesInFile(file: string) {
+      if (file === target.filePath) return [target];
+      if (file === related.filePath) return [related];
+      return [];
+    },
+    getCallers: () => [], getCallees: () => [],
+    getImpactRadius: (id: string) => ({ nodes: new Map([[id, id === target.id ? target : related]]), edges: [] }),
+    findPath: (from: string, to: string) => from === target.id && to === related.id
+      ? [{ node: target, edge: null }, { node: related, edge: { kind: "calls" } }]
+      : null,
+  };
+
+  const output = runAnalyzeCode(selectorGraph as never, {
+    target: { symbol: "execute", file: target.filePath, line: 8 },
+    related: { symbol: "dispatch", file: related.filePath, line: 12 },
+  });
+
+  assert.equal(globalSearches, 0);
+  assert.match(output, /Target: execute \(method\)/);
+  assert.match(output, /Related: dispatch \(method\)/);
+  assert.match(output, /--calls→ dispatch/);
+});
+
+test("returns exact file-local candidates without global search when a file selector does not resolve", () => {
+  const first = node({ id: "first", name: "execute", kind: "method", filePath: "src/ports/primary/processEvent.ts", startLine: 8 });
+  const second = node({ id: "second", name: "execute", kind: "method", filePath: "src/ports/primary/processEvent.ts", startLine: 20 });
+  let globalSearches = 0;
+  const selectorGraph = {
+    searchNodes() { globalSearches++; return []; },
+    getNodesInFile: () => [first, second],
+    getCallers: () => { throw new Error("candidate output must not traverse"); },
+    getCallees: () => { throw new Error("candidate output must not traverse"); },
+    getImpactRadius: () => { throw new Error("candidate output must not traverse"); },
+    findPath: () => { throw new Error("candidate output must not traverse"); },
+  };
+
+  const output = runAnalyzeCode(selectorGraph as never, {
+    target: { symbol: "execute", file: first.filePath, line: 99 },
+  });
+
+  assert.equal(globalSearches, 0);
+  assert.match(output, /No exact definition of "execute" matches the supplied selector/);
+  assert.match(output, /"file": "src\/ports\/primary\/processEvent\.ts", "line": 8/);
+  assert.match(output, /"file": "src\/ports\/primary\/processEvent\.ts", "line": 20/);
 });
 
 test("analyzes two symbols with both directed graph paths and normal no-path results", () => {
@@ -223,9 +278,9 @@ test("runs real indexed one- and two-target analysis through public registration
   const fixture = await createIndexedFixture();
   try {
     const tool = registeredAnalyzeTool();
-    const single = await tool.execute("call", { target: { symbol: "loginUser" } }, new AbortController().signal, undefined, { cwd: fixture.root });
+    const single = await tool.execute("call", { target: { symbol: "loginUser", file: "src/auth.ts", line: 2 } }, new AbortController().signal, undefined, { cwd: fixture.root });
     const singleText = single.content[0]?.text ?? "";
-    assert.equal(single.isError, undefined);
+    assert.equal(single.isError, undefined, singleText);
     assert.match(singleText, /src\/auth\.ts/);
     assert.match(singleText, /handleSubmit/);
     assert.match(singleText, /createSession/);
@@ -233,8 +288,8 @@ test("runs real indexed one- and two-target analysis through public registration
     assert.doesNotMatch(singleText, /ANALYZE_CODE_BODY_LITERAL/);
 
     const pair = await tool.execute("call", {
-      target: { symbol: "handleSubmit" },
-      related: { symbol: "loginUser" },
+      target: { symbol: "handleSubmit", file: "src/auth.ts", line: 3 },
+      related: { symbol: "loginUser", file: "src/auth.ts", line: 2 },
     }, new AbortController().signal, undefined, { cwd: fixture.root });
     const pairText = pair.content[0]?.text ?? "";
     assert.equal(pair.isError, undefined);

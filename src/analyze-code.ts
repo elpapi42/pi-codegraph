@@ -18,6 +18,7 @@ export interface AnalyzeCodeParams {
 
 type RelatedNode = { node: Node; edge?: Edge };
 type RelatedGroup = { node: Node; edgeKinds: string[] };
+type CodeGraphWithNodesInFile = CodeGraphInstance & { getNodesInFile(filePath: string): Node[] };
 type Resolution =
   | { kind: "resolved"; node: Node }
   | { kind: "candidates"; title: string; nodes: Node[] };
@@ -48,17 +49,19 @@ function resolveSelector(cg: CodeGraphInstance, selector: SymbolSelector, label:
   const symbol = requiredSymbol(selector?.symbol, label);
   const file = validateFile(selector?.file, label);
   const line = validateLine(selector?.line, label);
+  if (file !== undefined) return resolveFileSelector(cg, symbol, file, line, label);
+
   let results = cg.searchNodes(symbol, { limit: 50 });
   if (results.length === 0 && /[./]|::/.test(symbol)) {
     const tail = lastQualifierPart(symbol);
     if (tail && tail !== symbol) results = cg.searchNodes(tail, { limit: 50 });
   }
   const exact = results.map((result) => result.node).filter((node) => matchesSymbol(node, symbol));
-  const selected = exact.filter((node) => (file === undefined || node.filePath === file) && (line === undefined || node.startLine === line));
+  const selected = exact.filter((node) => line === undefined || node.startLine === line);
 
   if (selected.length === 1) return { kind: "resolved", node: selected[0]! };
   if (selected.length > 1) return { kind: "candidates", title: `Multiple exact definitions match ${JSON.stringify(symbol)}. Refine ${label} with file and line.`, nodes: selected };
-  if (exact.length > 0 && (file !== undefined || line !== undefined)) {
+  if (exact.length > 0 && line !== undefined) {
     return { kind: "candidates", title: `No exact definition of ${JSON.stringify(symbol)} matches the supplied selector.`, nodes: exact };
   }
 
@@ -68,6 +71,22 @@ function resolveSelector(cg: CodeGraphInstance, selector: SymbolSelector, label:
       ? `No exact definition matches ${JSON.stringify(symbol)}. Select a likely candidate before analysis.`
       : `No definition matches ${JSON.stringify(symbol)}.`,
     nodes: results.map((result) => result.node),
+  };
+}
+
+function resolveFileSelector(cg: CodeGraphInstance, symbol: string, file: string, line: number | undefined, label: string): Resolution {
+  const fileNodes = (cg as CodeGraphWithNodesInFile).getNodesInFile(file);
+  const exact = fileNodes.filter((node) => matchesSymbol(node, symbol));
+  const selected = exact.filter((node) => line === undefined || node.startLine === line);
+
+  if (selected.length === 1) return { kind: "resolved", node: selected[0]! };
+  if (selected.length > 1) return { kind: "candidates", title: `Multiple exact definitions match ${JSON.stringify(symbol)} in ${JSON.stringify(file)}. Refine ${label} with line.`, nodes: selected };
+  if (exact.length > 0) return { kind: "candidates", title: `No exact definition of ${JSON.stringify(symbol)} matches the supplied selector.`, nodes: exact };
+
+  return {
+    kind: "candidates",
+    title: `No exact definition matches ${JSON.stringify(symbol)} in ${JSON.stringify(file)}. Select a likely candidate before analysis.`,
+    nodes: fileNodes.filter((node) => node.name.toLowerCase().includes(symbol.toLowerCase())),
   };
 }
 

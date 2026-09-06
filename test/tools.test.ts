@@ -445,8 +445,11 @@ test("explore_code is registered with its focused schema and guidance", () => {
   const tool = getTool(fake.tools, "explore_code");
   const serialized = JSON.stringify(tool.parameters);
 
-  assert.match(serialized, /Natural-language question/);
+  assert.match(serialized, /Ask about indexed code behavior/);
   assert.match(JSON.stringify(tool), /returned source as already read/);
+  assert.match(JSON.stringify(tool), /exact project-relative paths and symbols when they are known/);
+  assert.match(JSON.stringify(tool), /can be noisy in multi-repository or duplicate-code indexes/);
+  assert.match(JSON.stringify(tool), /Verify every returned file path/);
   assert.doesNotMatch(serialized, /projectPath/);
   assert.doesNotMatch(serialized, /mode/);
   assert.doesNotMatch(serialized, /action/);
@@ -458,8 +461,10 @@ test("analyze_code has only automatic symbol selectors", () => {
   const tool = getTool(fake.tools, "analyze_code");
   const serialized = JSON.stringify(tool.parameters);
 
-  assert.match(JSON.stringify(tool), /exact matching within a bounded candidate search/);
+  assert.match(JSON.stringify(tool), /automatic bounded relationships, impact, and graph connections/);
   assert.match(JSON.stringify(tool), /ambiguous or incorrect resolutions/);
+  assert.match(JSON.stringify(tool), /file-local resolution/);
+  assert.match(JSON.stringify(tool), /file and line from explore_code or returned candidates whenever available/);
   assert.match(serialized, /target/);
   assert.match(serialized, /related/);
   for (const forbidden of ["operation", "depth", "limit", "mode", "projectPath", "includeCode"]) {

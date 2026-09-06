@@ -84,14 +84,14 @@ const ExploreParams = Type.Object({
 });
 
 const ExploreCodeParams = Type.Object({
-  query: Type.String({ description: "Natural-language question, symbol names, or indexed code file path. For example: \"how does login work\", \"AuthService loginUser session-manager\", or \"src/auth/session.ts\"." }),
+  query: Type.String({ description: "Ask about indexed code behavior, or give known symbol names and exact project-relative code paths. Use paths and symbols together when known, for example: \"src/auth/session.ts createSession\"." }),
   maxFiles: Type.Optional(Type.Number({ description: "Maximum source files to return. Omit it to let CodeGraph choose an adaptive limit, or set 1 through 20." })),
 });
 
 const AnalyzeSelector = Type.Object({
-  symbol: Type.String({ description: "Exact or likely code symbol name. If it is ambiguous or partial, analyze_code returns candidates instead of analyzing." }),
-  file: Type.Optional(Type.String({ description: "Exact project-relative code file path from an earlier candidate result, used only to disambiguate the symbol." })),
-  line: Type.Optional(Type.Number({ description: "Exact definition start line from an earlier candidate result, used only to disambiguate the symbol." })),
+  symbol: Type.String({ description: "Exact or likely code symbol name. A partial or ambiguous name returns candidates instead of analysis." }),
+  file: Type.Optional(Type.String({ description: "Exact project-relative code file path from explore_code or analyze_code candidates. When set, analyze_code resolves symbols only in this file." })),
+  line: Type.Optional(Type.Number({ description: "Exact definition start line from explore_code or analyze_code candidates. Use with file to select one definition." })),
 });
 
 const AnalyzeCodeParams = Type.Object({
@@ -185,12 +185,13 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
   registerCodeGraphTool(pi, runtime, {
     name: "explore_code",
     label: "Explore Indexed Code",
-    description: "Explore indexed code for a natural-language question or symbol and file names. Returns current line-numbered source, relationships, call paths including supported dynamic dispatch, and blast radius. Treat returned source as already read. Use a narrower second query only for a specific gap. This tool indexes code, not Markdown, general configuration, generated runtime wiring, or exhaustive filesystem inventories. Use read for known files and filesystem or text-search commands such as rg or find for those surfaces.",
-    promptSnippet: "explore_code: primary code-navigation tool for indexed code; returns source, relationships, paths, and blast radius in one call.",
+    description: "Explore indexed code for broad behavior, ranked context, and source. Returns current line-numbered source, relationships, call paths including supported dynamic dispatch, and blast radius. Use exact project-relative paths and symbols when they are known. Broad queries can be noisy in multi-repository or duplicate-code indexes, so verify every returned file path before using it. Treat returned source as already read. This tool indexes code, not Markdown, general configuration, generated runtime wiring, or exhaustive filesystem inventories. Use read for known files and filesystem or text-search commands such as rg or find for those surfaces.",
+    promptSnippet: "explore_code: understand indexed code and retrieve ranked source context; verify paths in duplicate-code indexes.",
     promptGuidelines: [
-      "Use `explore_code` first to understand indexed code, trace a flow, investigate a code bug, or prepare a code change.",
-      "Use a natural-language question, a symbol or file name, or related names across a flow.",
-      "Treat source returned by `explore_code` as already read. Use a narrower second query only when a specific gap remains.",
+      "Use `explore_code` for broad indexed-code behavior, architecture, bugs, flows, and source context.",
+      "When known, include exact project-relative paths and symbol names in the query to focus retrieval.",
+      "Broad queries can be noisy in multi-repository or duplicate-code indexes. Verify every returned file path before relying on it.",
+      "Treat source returned by `explore_code` as already read. Use a narrower second query only for a specific gap.",
       "Use read for known files and filesystem or text-search commands such as rg or find for Markdown, configuration, generated runtime wiring, and exhaustive file inventories because CodeGraph indexes code only.",
     ],
     parameters: ExploreCodeParams,
@@ -200,11 +201,11 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
   registerCodeGraphTool(pi, runtime, {
     name: "analyze_code",
     label: "Analyze Code Symbols",
-    description: "Analyze one or two indexed code symbols after exact matching within a bounded candidate search. For one resolved symbol, returns direct callers, direct callees, wider impact, and test files in its graph neighborhood. For two resolved symbols, also returns graph paths in both directions. If either symbol is ambiguous or partial, returns selector-ready candidates without analysis. Relationships are static indexed evidence that can contain ambiguous or incorrect resolutions and are not runtime proof. This tool does not include source code.",
-    promptSnippet: "analyze_code: inspect static graph relationships for one or two code symbols; ambiguity returns candidates.",
+    description: "Analyze one or two indexed code symbols with automatic bounded relationships, impact, and graph connections. For one resolved symbol, returns incoming and outgoing relationships, wider impact, and test files in its graph neighborhood. For two resolved symbols, also returns graph paths in both directions. Pass file and line from explore_code or returned candidates whenever available. When file is set, analyze_code resolves symbols only in that file. If either symbol is ambiguous or partial, returns selector-ready candidates without analysis. Relationships are static indexed evidence that can contain ambiguous or incorrect resolutions and are not runtime proof. This tool does not include source code.",
+    promptSnippet: "analyze_code: automatically inspect bounded static relationships, impact, and connections for one or two symbols; file uses file-local resolution.",
     promptGuidelines: [
-      "Use `analyze_code` before changing a known symbol when you need static callers, callees, impact, or a graph connection to another symbol.",
-      "Provide `file` and `line` only when you need to disambiguate a symbol. Use candidates returned by a previous analyze_code call.",
+      "Use `analyze_code` for automatic bounded static relationships, impact, and a graph connection between one or two symbols.",
+      "Pass file and line from explore_code or returned candidates whenever available. When file is set, analyze_code resolves symbols only in that file.",
       "Use `explore_code` for source and ranked code context. Use analyze_code for bounded static graph evidence without source.",
       "Treat graph paths and relationships as static indexed evidence. They can omit behavior or contain ambiguous or incorrect resolutions, and are not proof of runtime execution.",
     ],
