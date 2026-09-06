@@ -53,7 +53,6 @@ export const isInitialized = resolvedIsInitialized;
 export type {
   CodeGraph as CodeGraphInstance,
   Edge,
-  FileRecord,
   GraphStats,
   IndexProgress,
   IndexResult,

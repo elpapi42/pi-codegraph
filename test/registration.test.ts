@@ -57,16 +57,11 @@ test("extension shell registers shutdown cleanup, commands, and tools", () => {
   assert.equal(fake.events.includes("session_start"), false);
   assert.deepEqual(fake.tools.map((tool) => tool.name).sort(), [
     "analyze_code",
-    "callees",
-    "callers",
-    "context",
-    "explore",
     "explore_code",
-    "files",
-    "impact",
-    "node",
-    "search",
   ]);
+  for (const legacy of ["search", "files", "context", "explore", "node", "callers", "callees", "impact"]) {
+    assert.equal(fake.tools.some((tool) => tool.name === legacy), false, `${legacy} must not register`);
+  }
 });
 
 test("tool schemas are active-path-only and do not expose projectPath", () => {
