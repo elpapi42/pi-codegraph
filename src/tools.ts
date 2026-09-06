@@ -5,6 +5,7 @@ import type { CodeGraphInstance, Edge, FileRecord, Node } from "./codegraph-sdk.
 import type { CodeGraphRuntime } from "./runtime.js";
 import { runExplore } from "./explore.js";
 import { runExploreCode } from "./explore-code.js";
+import { runAnalyzeCode } from "./analyze-code.js";
 import { matchesPathPrefix, globToRegex } from "./paths.js";
 import { errorResult, textResult, type PiTextToolResult } from "./result.js";
 import { findAllSymbols, findSymbol } from "./symbols.js";
@@ -85,6 +86,17 @@ const ExploreParams = Type.Object({
 const ExploreCodeParams = Type.Object({
   query: Type.String({ description: "Natural-language question, symbol names, or indexed code file path. For example: \"how does login work\", \"AuthService loginUser session-manager\", or \"src/auth/session.ts\"." }),
   maxFiles: Type.Optional(Type.Number({ description: "Maximum source files to return. Omit it to let CodeGraph choose an adaptive limit, or set 1 through 20." })),
+});
+
+const AnalyzeSelector = Type.Object({
+  symbol: Type.String({ description: "Exact or likely code symbol name. If it is ambiguous or partial, analyze_code returns candidates instead of analyzing." }),
+  file: Type.Optional(Type.String({ description: "Exact project-relative code file path from an earlier candidate result, used only to disambiguate the symbol." })),
+  line: Type.Optional(Type.Number({ description: "Exact definition start line from an earlier candidate result, used only to disambiguate the symbol." })),
+});
+
+const AnalyzeCodeParams = Type.Object({
+  target: AnalyzeSelector,
+  related: Type.Optional(AnalyzeSelector),
 });
 
 interface CodeGraphToolSpec<TParams extends TSchema> {
@@ -183,6 +195,21 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
     ],
     parameters: ExploreCodeParams,
     run: runExploreCode,
+  });
+
+  registerCodeGraphTool(pi, runtime, {
+    name: "analyze_code",
+    label: "Analyze Code Symbols",
+    description: "Analyze one or two indexed code symbols with automatic exact static graph analysis. For one resolved symbol, returns direct callers, direct callees, wider impact, and test files in its graph neighborhood. For two resolved symbols, also returns graph paths in both directions. If either symbol is ambiguous or partial, returns selector-ready candidates without analysis. This output is static indexed evidence, not runtime proof, and does not include source code.",
+    promptSnippet: "analyze_code: verify exact static graph relationships for one or two code symbols; ambiguity returns candidates.",
+    promptGuidelines: [
+      "Use `analyze_code` before changing a known symbol when you need exact callers, callees, impact, or a graph connection to another symbol.",
+      "Provide `file` and `line` only when you need to disambiguate a symbol. Use candidates returned by a previous analyze_code call.",
+      "Use `explore_code` for source and ranked code context. Use analyze_code for bounded static graph evidence without source.",
+      "Treat graph paths and relationships as static indexed evidence, not proof of runtime execution.",
+    ],
+    parameters: AnalyzeCodeParams,
+    run: (cg, params) => runAnalyzeCode(cg, params),
   });
 
   registerCodeGraphTool(pi, runtime, {
@@ -296,6 +323,8 @@ function formatToolCall(toolName: string, args: Record<string, unknown> | undefi
     case "explore":
     case "explore_code":
       return joinCallParts(title, formatPrimary(params.query, theme), formatOptional("files", params.maxFiles, theme));
+    case "analyze_code":
+      return joinCallParts(title, formatPrimary((params.target as Record<string, unknown> | undefined)?.symbol, theme, { quote: false }), formatOptional("related", (params.related as Record<string, unknown> | undefined)?.symbol, theme));
     case "files":
       return joinCallParts(
         title,

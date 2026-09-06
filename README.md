@@ -9,7 +9,7 @@ It is built for the common agent workflow: before answering code-navigation ques
 - A Pi-native extension surface over the CodeGraph TypeScript SDK.
 - Active-workspace-only exploration from Pi's current `ctx.cwd`.
 - Automatic CodeGraph initialization, indexing, and syncing before tool queries.
-- Nine code-intelligence tools: `explore_code`, `search`, `context`, `explore`, `callers`, `callees`, `impact`, `node`, and `files`.
+- Ten code-intelligence tools: experimental `explore_code` and `analyze_code`, plus `search`, `context`, `explore`, `callers`, `callees`, `impact`, `node`, and `files`.
 - Two management commands: `/cg:status` and `/cg:uninit`.
 - Bounded Markdown results designed for agent context, not terminal UI output.
 
@@ -24,6 +24,14 @@ This project now depends on the published `@colbymchenry/codegraph` npm SDK pack
 `explore_code` is an experimental single-call view of indexed code. It accepts a natural-language question or symbol and file names, then returns CodeGraph 1.6 source, relationships, call paths, and blast-radius output. It runs the extension-local public `codegraph` CLI after this extension has prepared the active project index. The eight existing tools remain available during this experiment.
 
 The CLI subprocess has startup cost and does not retain upstream MCP exploration-session deduplication between calls. It operates only on the active CodeGraph root. Cancellation is best effort because the package shim can start a descendant process. Use read for known files and filesystem or text-search commands such as `rg` or `find` for Markdown, general configuration, generated runtime wiring, and exhaustive file inventories.
+
+### Experimental `analyze_code`
+
+`analyze_code` is an experimental automatic static-graph view for one or two code symbols. It has a required `target` selector and an optional `related` selector. Each selector contains `symbol` and may include exact project-relative `file` and definition `line` values when a name is ambiguous.
+
+For one resolved symbol, it returns direct callers, direct callees, residual bounded impact, and test-file paths found in that graph neighborhood. For two resolved symbols, it returns both neighborhoods and a directed graph path in each direction when available. It never returns full source. It chooses graph operations and bounds internally, so callers do not select an operation, depth, limit, or direction.
+
+If a symbol is partial, missing, or ambiguous, the tool returns up to 20 selector-ready candidates and performs no traversal. Its results are static indexed evidence rather than runtime proof. Dynamic, generated, unresolved, and unindexed paths can be absent. Existing narrow tools remain available during this experiment.
 
 ### CodeGraph 1.6 upgrade
 
@@ -98,6 +106,17 @@ This keeps the agent's mental model simple: the tools see the active Pi workspac
 Search indexed symbols by name or partial name. Optional filters include `kind` and `limit`. The public `kind: "type"` option maps to CodeGraph's internal `type_alias` node kind.
 
 Use it to find likely entry points before reading files.
+
+### `analyze_code`
+
+Analyze one or two selected code symbols without selecting an operation. Use it before changing a known symbol when exact static callers, callees, bounded impact, or a graph connection matter.
+
+Inputs:
+
+- `target`: required `{ symbol, file?, line? }` selector.
+- `related`: optional selector. When present, the output includes directed graph paths in both directions when they exist.
+
+A selector with one exact match in the bounded candidate search runs analysis. A partial, missing, or ambiguous selector returns candidates with exact `symbol`, `file`, and `line` values for a corrected call. File selectors must be exact safe project-relative code paths. Line selectors must be exact positive definition start lines.
 
 ### `files`
 
@@ -196,6 +215,7 @@ src/index.ts          Extension entrypoint and Pi registration
 src/runtime.ts        CodeGraph root resolution, readiness, cache, sync, uninit
 src/commands.ts       /cg:status and /cg:uninit command wiring
 src/tools.ts          Tool schemas, registration wrapper, and handlers
+src/analyze-code.ts   Experimental operation-free static graph analysis
 src/symbols.ts        Symbol resolution helpers ported from CodeGraph MCP behavior
 src/result.ts         Pi text result envelope and truncation helpers
 src/paths.ts          Active-project path and glob helpers
@@ -223,7 +243,8 @@ The test suite covers:
 - runtime root resolution and readiness transitions,
 - failure paths such as zero-file indexing and lock-skipped sync,
 - `/cg:status` and `/cg:uninit` behavior,
-- real CodeGraph fixture tests for `search` and `files`,
+- real CodeGraph fixture tests for `search`, `files`, and one- and two-symbol `analyze_code`,
+- ambiguity, strict selector, graph-direction, truncation, and static-analysis output checks,
 - representative symbol/context/explore tool outputs,
 - truncation and MCP-name leak prevention.
 

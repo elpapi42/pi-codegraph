@@ -452,6 +452,20 @@ test("explore_code is registered with its focused schema and guidance", () => {
   assert.doesNotMatch(serialized, /action/);
 });
 
+test("analyze_code has only automatic symbol selectors", () => {
+  const fake = createFakePi();
+  registerTools(fake.pi as never, new StaticRuntime(createSymbolGraph()) as unknown as CodeGraphRuntime);
+  const tool = getTool(fake.tools, "analyze_code");
+  const serialized = JSON.stringify(tool.parameters);
+
+  assert.match(JSON.stringify(tool), /automatic exact static graph analysis/);
+  assert.match(serialized, /target/);
+  assert.match(serialized, /related/);
+  for (const forbidden of ["operation", "depth", "limit", "mode", "projectPath", "includeCode"]) {
+    assert.doesNotMatch(serialized, new RegExp(forbidden));
+  }
+});
+
 test("tool call renderer shows compact parameters in the header", () => {
   const tools = registerWithGraph(createSymbolGraph());
 
@@ -459,6 +473,7 @@ test("tool call renderer shows compact parameters in the header", () => {
   assert.equal(renderToolCall(getTool(tools, "context"), { task: "fix login redirect bug", maxNodes: 30, includeCode: false }), "context \"fix login redirect bug\" nodes=30 no-code");
   assert.equal(renderToolCall(getTool(tools, "explore"), { query: "AuthService loginUser", maxFiles: 6 }), "explore \"AuthService loginUser\" files=6");
   assert.equal(renderToolCall(getTool(tools, "explore_code"), { query: "how does login work", maxFiles: 6 }), "explore_code \"how does login work\" files=6");
+  assert.equal(renderToolCall(getTool(tools, "analyze_code"), { target: { symbol: "loginUser" }, related: { symbol: "createSession" } }), "analyze_code loginUser related=createSession");
   assert.equal(renderToolCall(getTool(tools, "files"), { path: "src", pattern: "**/*.tsx", format: "tree", maxDepth: 3, includeMetadata: false }), "files src \"**/*.tsx\" tree depth=3 no-meta");
   assert.equal(renderToolCall(getTool(tools, "node"), { symbol: "AuthService.login", includeCode: true }), "node AuthService.login +code");
   assert.equal(renderToolCall(getTool(tools, "callers"), { symbol: "loginUser", limit: 50 }), "callers loginUser limit=50");

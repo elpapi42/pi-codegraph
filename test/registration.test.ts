@@ -56,6 +56,7 @@ test("extension shell registers shutdown cleanup, commands, and tools", () => {
   assert.equal(fake.events.includes("session_shutdown"), true);
   assert.equal(fake.events.includes("session_start"), false);
   assert.deepEqual(fake.tools.map((tool) => tool.name).sort(), [
+    "analyze_code",
     "callees",
     "callers",
     "context",
@@ -71,6 +72,12 @@ test("extension shell registers shutdown cleanup, commands, and tools", () => {
 test("tool schemas are active-path-only and do not expose projectPath", () => {
   const fake = createFakePi();
   registerTools(fake.pi as never, new CodeGraphRuntime());
+  const analyze = fake.tools.find((tool) => tool.name === "analyze_code");
+  assert.ok(analyze);
+  assert.equal(containsKey(analyze.parameters, "operation"), false);
+  assert.equal(containsKey(analyze.parameters, "depth"), false);
+  assert.equal(containsKey(analyze.parameters, "limit"), false);
+  assert.equal(containsKey(analyze.parameters, "projectPath"), false);
 
   for (const tool of fake.tools) {
     assert.equal(
