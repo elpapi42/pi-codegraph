@@ -9,15 +9,21 @@ It is built for the common agent workflow: before answering code-navigation ques
 - A Pi-native extension surface over the CodeGraph TypeScript SDK.
 - Active-workspace-only exploration from Pi's current `ctx.cwd`.
 - Automatic CodeGraph initialization, indexing, and syncing before tool queries.
-- Eight code-intelligence tools: `search`, `context`, `explore`, `callers`, `callees`, `impact`, `node`, and `files`.
+- Nine code-intelligence tools: `explore_code`, `search`, `context`, `explore`, `callers`, `callees`, `impact`, `node`, and `files`.
 - Two management commands: `/cg:status` and `/cg:uninit`.
 - Bounded Markdown results designed for agent context, not terminal UI output.
 
-It does **not** shell out to the CodeGraph CLI, start the CodeGraph MCP server, import private `codegraph/src/*` internals, expose `projectPath`, or register `/cg:init`.
+It does not start the CodeGraph MCP server, import private `codegraph/src/*` internals, expose `projectPath`, or register `/cg:init`.
 
 ## Current status
 
 This project now depends on the published `@colbymchenry/codegraph` npm SDK package rather than a local `./codegraph` clone. The extension remains local-development oriented because it is a private Pi package, but a fresh clone no longer needs the CodeGraph repository initialized or built just to install, typecheck, or run the extension.
+
+### Experimental `explore_code`
+
+`explore_code` is an experimental single-call view of indexed code. It accepts a natural-language question or symbol and file names, then returns CodeGraph 1.6 source, relationships, call paths, and blast-radius output. It runs the extension-local public `codegraph` CLI after this extension has prepared the active project index. The eight existing tools remain available during this experiment.
+
+The CLI subprocess has startup cost and does not retain upstream MCP exploration-session deduplication between calls. It operates only on the active CodeGraph root. Cancellation is best effort because the package shim can start a descendant process. Use read for known files and filesystem or text-search commands such as `rg` or `find` for Markdown, general configuration, generated runtime wiring, and exhaustive file inventories.
 
 ### CodeGraph 1.6 upgrade
 

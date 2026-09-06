@@ -261,6 +261,25 @@ test("files tool returns real CodeGraph fixture tree and filters", async () => {
   }
 });
 
+test("explore_code returns upstream source, relationships, and blast radius from a real index", async () => {
+  const fixture = await createIndexedFixture();
+  try {
+    const fake = createFakePi();
+    registerTools(fake.pi as never, new CodeGraphRuntime());
+
+    const result = await executeTool(getTool(fake.tools, "explore_code"), { query: "how does login work", maxFiles: 4 }, fixture.root);
+    const text = result.content[0]?.text ?? "";
+
+    assert.equal(result.isError, undefined);
+    assert.match(text, /loginUser/);
+    assert.match(text, /createSession/);
+    assert.match(text, /1 caller in `src\/auth\.ts`/);
+    assert.match(text, /Blast radius/i);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("all eight tools return real indexed fixture facts", async () => {
   const fixture = await createIndexedFixture();
   try {
@@ -420,12 +439,26 @@ test("symbol misses are normal non-error markdown results", async () => {
   assert.match(result.content[0]?.text ?? "", /not found/);
 });
 
+test("explore_code is registered with its focused schema and guidance", () => {
+  const fake = createFakePi();
+  registerTools(fake.pi as never, new StaticRuntime(createSymbolGraph()) as unknown as CodeGraphRuntime);
+  const tool = getTool(fake.tools, "explore_code");
+  const serialized = JSON.stringify(tool.parameters);
+
+  assert.match(serialized, /Natural-language question/);
+  assert.match(JSON.stringify(tool), /returned source as already read/);
+  assert.doesNotMatch(serialized, /projectPath/);
+  assert.doesNotMatch(serialized, /mode/);
+  assert.doesNotMatch(serialized, /action/);
+});
+
 test("tool call renderer shows compact parameters in the header", () => {
   const tools = registerWithGraph(createSymbolGraph());
 
   assert.equal(renderToolCall(getTool(tools, "search"), { query: "auth", kind: "function", limit: 25 }), "search \"auth\" kind=function limit=25");
   assert.equal(renderToolCall(getTool(tools, "context"), { task: "fix login redirect bug", maxNodes: 30, includeCode: false }), "context \"fix login redirect bug\" nodes=30 no-code");
   assert.equal(renderToolCall(getTool(tools, "explore"), { query: "AuthService loginUser", maxFiles: 6 }), "explore \"AuthService loginUser\" files=6");
+  assert.equal(renderToolCall(getTool(tools, "explore_code"), { query: "how does login work", maxFiles: 6 }), "explore_code \"how does login work\" files=6");
   assert.equal(renderToolCall(getTool(tools, "files"), { path: "src", pattern: "**/*.tsx", format: "tree", maxDepth: 3, includeMetadata: false }), "files src \"**/*.tsx\" tree depth=3 no-meta");
   assert.equal(renderToolCall(getTool(tools, "node"), { symbol: "AuthService.login", includeCode: true }), "node AuthService.login +code");
   assert.equal(renderToolCall(getTool(tools, "callers"), { symbol: "loginUser", limit: 50 }), "callers loginUser limit=50");

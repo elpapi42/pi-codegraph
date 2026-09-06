@@ -60,6 +60,7 @@ test("extension shell registers shutdown cleanup, commands, and tools", () => {
     "callers",
     "context",
     "explore",
+    "explore_code",
     "files",
     "impact",
     "node",

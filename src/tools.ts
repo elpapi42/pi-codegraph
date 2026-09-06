@@ -4,6 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import type { CodeGraphInstance, Edge, FileRecord, Node } from "./codegraph-sdk.js";
 import type { CodeGraphRuntime } from "./runtime.js";
 import { runExplore } from "./explore.js";
+import { runExploreCode } from "./explore-code.js";
 import { matchesPathPrefix, globToRegex } from "./paths.js";
 import { errorResult, textResult, type PiTextToolResult } from "./result.js";
 import { findAllSymbols, findSymbol } from "./symbols.js";
@@ -81,6 +82,11 @@ const ExploreParams = Type.Object({
   maxFiles: Type.Optional(Type.Number({ description: "Maximum number of files to include source code from. Defaults adaptively by project size, clamped 1..20." })),
 });
 
+const ExploreCodeParams = Type.Object({
+  query: Type.String({ description: "Natural-language question, symbol names, or indexed code file path. For example: \"how does login work\", \"AuthService loginUser session-manager\", or \"src/auth/session.ts\"." }),
+  maxFiles: Type.Optional(Type.Number({ description: "Maximum source files to return. Omit it to let CodeGraph choose an adaptive limit, or set 1 through 20." })),
+});
+
 interface CodeGraphToolSpec<TParams extends TSchema> {
   name: string;
   label: string;
@@ -88,7 +94,7 @@ interface CodeGraphToolSpec<TParams extends TSchema> {
   parameters: TParams;
   promptSnippet?: string;
   promptGuidelines?: string[];
-  run: (cg: CodeGraphInstance, params: Static<TParams>) => Promise<string> | string;
+  run: (cg: CodeGraphInstance, params: Static<TParams>, signal: AbortSignal | undefined) => Promise<string> | string;
 }
 
 export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void {
@@ -162,6 +168,21 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
     ],
     parameters: ExploreParams,
     run: runExplore,
+  });
+
+  registerCodeGraphTool(pi, runtime, {
+    name: "explore_code",
+    label: "Explore Indexed Code",
+    description: "Explore indexed code for a natural-language question or symbol and file names. Returns current line-numbered source, relationships, call paths including supported dynamic dispatch, and blast radius. Treat returned source as already read. Use a narrower second query only for a specific gap. This tool indexes code, not Markdown, general configuration, generated runtime wiring, or exhaustive filesystem inventories. Use read for known files and filesystem or text-search commands such as rg or find for those surfaces.",
+    promptSnippet: "explore_code: primary code-navigation tool for indexed code; returns source, relationships, paths, and blast radius in one call.",
+    promptGuidelines: [
+      "Use `explore_code` first to understand indexed code, trace a flow, investigate a code bug, or prepare a code change.",
+      "Use a natural-language question, a symbol or file name, or related names across a flow.",
+      "Treat source returned by `explore_code` as already read. Use a narrower second query only when a specific gap remains.",
+      "Use read for known files and filesystem or text-search commands such as rg or find for Markdown, configuration, generated runtime wiring, and exhaustive file inventories because CodeGraph indexes code only.",
+    ],
+    parameters: ExploreCodeParams,
+    run: runExploreCode,
   });
 
   registerCodeGraphTool(pi, runtime, {
@@ -253,7 +274,7 @@ export function registerCodeGraphTool<TParams extends TSchema>(
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
       try {
         const cg = await runtime.ensureReady(ctx, { signal });
-        const text = await spec.run(cg, params);
+        const text = await spec.run(cg, params, signal);
         return textResult(text, { tool: spec.name, projectRoot: cg.getProjectRoot() }) as never;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -273,6 +294,7 @@ function formatToolCall(toolName: string, args: Record<string, unknown> | undefi
     case "context":
       return joinCallParts(title, formatPrimary(params.task, theme), formatOptional("nodes", params.maxNodes, theme), params.includeCode === false ? theme.fg("dim", "no-code") : undefined);
     case "explore":
+    case "explore_code":
       return joinCallParts(title, formatPrimary(params.query, theme), formatOptional("files", params.maxFiles, theme));
     case "files":
       return joinCallParts(
