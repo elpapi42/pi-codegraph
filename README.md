@@ -31,7 +31,7 @@ The CLI subprocess has startup cost and does not retain upstream MCP exploration
 
 For one resolved symbol, it returns direct callers, direct callees, residual bounded impact, and test-file paths found in that graph neighborhood. For two resolved symbols, it returns both neighborhoods and a directed graph path in each direction when available. It never returns full source. It chooses graph operations and bounds internally, so callers do not select an operation, depth, limit, or direction.
 
-If a symbol is partial, missing, or ambiguous, the tool returns up to 20 selector-ready candidates and performs no traversal. Its results are static indexed evidence rather than runtime proof. Dynamic, generated, unresolved, and unindexed paths can be absent. Existing narrow tools remain available during this experiment.
+If a symbol is partial, missing, or ambiguous, the tool returns up to 20 selector-ready candidates and performs no traversal. It labels definition candidates separately from import and file nodes, and ranks definitions first. Target selection uses exact matching within a bounded candidate search. Relationships are static indexed evidence that can omit dynamic, generated, unresolved, and unindexed behavior and can contain ambiguous or incorrect resolutions. They are not runtime proof. Existing narrow tools remain available during this experiment.
 
 ### CodeGraph 1.6 upgrade
 
@@ -109,7 +109,7 @@ Use it to find likely entry points before reading files.
 
 ### `analyze_code`
 
-Analyze one or two selected code symbols without selecting an operation. Use it before changing a known symbol when exact static callers, callees, bounded impact, or a graph connection matter.
+Analyze one or two selected code symbols without selecting an operation. Use it before changing a known symbol when static callers, callees, bounded impact, or a graph connection matter.
 
 Inputs:
 

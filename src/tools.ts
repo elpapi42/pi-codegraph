@@ -200,13 +200,13 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
   registerCodeGraphTool(pi, runtime, {
     name: "analyze_code",
     label: "Analyze Code Symbols",
-    description: "Analyze one or two indexed code symbols with automatic exact static graph analysis. For one resolved symbol, returns direct callers, direct callees, wider impact, and test files in its graph neighborhood. For two resolved symbols, also returns graph paths in both directions. If either symbol is ambiguous or partial, returns selector-ready candidates without analysis. This output is static indexed evidence, not runtime proof, and does not include source code.",
-    promptSnippet: "analyze_code: verify exact static graph relationships for one or two code symbols; ambiguity returns candidates.",
+    description: "Analyze one or two indexed code symbols after exact matching within a bounded candidate search. For one resolved symbol, returns direct callers, direct callees, wider impact, and test files in its graph neighborhood. For two resolved symbols, also returns graph paths in both directions. If either symbol is ambiguous or partial, returns selector-ready candidates without analysis. Relationships are static indexed evidence that can contain ambiguous or incorrect resolutions and are not runtime proof. This tool does not include source code.",
+    promptSnippet: "analyze_code: inspect static graph relationships for one or two code symbols; ambiguity returns candidates.",
     promptGuidelines: [
-      "Use `analyze_code` before changing a known symbol when you need exact callers, callees, impact, or a graph connection to another symbol.",
+      "Use `analyze_code` before changing a known symbol when you need static callers, callees, impact, or a graph connection to another symbol.",
       "Provide `file` and `line` only when you need to disambiguate a symbol. Use candidates returned by a previous analyze_code call.",
       "Use `explore_code` for source and ranked code context. Use analyze_code for bounded static graph evidence without source.",
-      "Treat graph paths and relationships as static indexed evidence, not proof of runtime execution.",
+      "Treat graph paths and relationships as static indexed evidence. They can omit behavior or contain ambiguous or incorrect resolutions, and are not proof of runtime execution.",
     ],
     parameters: AnalyzeCodeParams,
     run: (cg, params) => runAnalyzeCode(cg, params),

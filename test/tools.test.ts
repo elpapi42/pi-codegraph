@@ -458,7 +458,8 @@ test("analyze_code has only automatic symbol selectors", () => {
   const tool = getTool(fake.tools, "analyze_code");
   const serialized = JSON.stringify(tool.parameters);
 
-  assert.match(JSON.stringify(tool), /automatic exact static graph analysis/);
+  assert.match(JSON.stringify(tool), /exact matching within a bounded candidate search/);
+  assert.match(JSON.stringify(tool), /ambiguous or incorrect resolutions/);
   assert.match(serialized, /target/);
   assert.match(serialized, /related/);
   for (const forbidden of ["operation", "depth", "limit", "mode", "projectPath", "includeCode"]) {

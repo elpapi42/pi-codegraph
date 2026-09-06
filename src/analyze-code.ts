@@ -17,6 +17,7 @@ export interface AnalyzeCodeParams {
 }
 
 type RelatedNode = { node: Node; edge?: Edge };
+type RelatedGroup = { node: Node; edgeKinds: string[] };
 type Resolution =
   | { kind: "resolved"; node: Node }
   | { kind: "candidates"; title: string; nodes: Node[] };
@@ -71,7 +72,7 @@ function resolveSelector(cg: CodeGraphInstance, selector: SymbolSelector, label:
 }
 
 function formatCandidates(result: Extract<Resolution, { kind: "candidates" }>): string {
-  const nodes = sortNodes(result.nodes).slice(0, sectionLimit);
+  const nodes = sortCandidates(result.nodes).slice(0, sectionLimit);
   const lines = ["## Code Analysis", "", result.title];
   if (nodes.length === 0) return [...lines, "", "No likely code-symbol candidates found."].join("\n");
 
@@ -82,8 +83,8 @@ function formatCandidates(result: Extract<Resolution, { kind: "candidates" }>): 
 }
 
 function formatNeighborhood(cg: CodeGraphInstance, node: Node, label: string): string {
-  const callers = sortRelated(cg.getCallers(node.id) as RelatedNode[]);
-  const callees = sortRelated(cg.getCallees(node.id) as RelatedNode[]);
+  const callers = groupRelations(cg.getCallers(node.id) as RelatedNode[]);
+  const callees = groupRelations(cg.getCallees(node.id) as RelatedNode[]);
   const directIds = new Set([node.id, ...callers.map((item) => item.node.id), ...callees.map((item) => item.node.id)]);
   const impact = cg.getImpactRadius(node.id, impactDepth);
   const residual = sortNodes([...impact.nodes.values()].filter((item) => !directIds.has(item.id)));
@@ -95,9 +96,9 @@ function formatNeighborhood(cg: CodeGraphInstance, node: Node, label: string): s
     node.qualifiedName !== node.name ? `Qualified: ${node.qualifiedName}` : "",
     node.signature ? `Signature: \`${node.signature}\`` : "",
     "",
-    formatRelations("Direct Callers", callers, node, "incoming"),
+    formatRelations("Incoming Relationships", callers, node, "incoming"),
     "",
-    formatRelations("Direct Callees", callees, node, "outgoing"),
+    formatRelations("Outgoing Relationships", callees, node, "outgoing"),
     "",
     formatNodes("Wider Impact", residual),
     "",
@@ -105,14 +106,14 @@ function formatNeighborhood(cg: CodeGraphInstance, node: Node, label: string): s
   ].filter((line) => line !== "").join("\n");
 }
 
-function formatRelations(title: string, related: RelatedNode[], target: Node, direction: "incoming" | "outgoing"): string {
+function formatRelations(title: string, related: RelatedGroup[], target: Node, direction: "incoming" | "outgoing"): string {
   const shown = related.slice(0, sectionLimit);
   const lines = [`## ${title} (${shown.length} of ${related.length})`];
   for (const item of shown) {
-    const edge = item.edge?.kind ?? "references";
+    const edges = item.edgeKinds.join(", ");
     const relation = direction === "incoming"
-      ? `${formatNode(item.node)} --${edge}→ ${target.name}`
-      : `${target.name} --${edge}→ ${formatNode(item.node)}`;
+      ? `${formatNode(item.node)} --${edges}→ ${target.name}`
+      : `${target.name} --${edges}→ ${formatNode(item.node)}`;
     lines.push(`- ${relation}`);
   }
   if (related.length > shown.length) lines.push(`- Truncated after ${shown.length} entries.`);
@@ -158,19 +159,39 @@ function formatPath(title: string, path: Array<{ node: Node; edge: Edge | null }
 function formatCandidate(node: Node): string {
   const signature = node.signature ? `\n   Signature: \`${node.signature}\`` : "";
   const qualified = node.qualifiedName !== node.name ? `\n   Qualified: ${node.qualifiedName}` : "";
-  return `- ${node.name} (${node.kind})\n   Selector: { "symbol": ${JSON.stringify(node.name)}, "file": ${JSON.stringify(node.filePath)}, "line": ${node.startLine} }${qualified}${signature}`;
+  return `- ${candidateLabel(node)}: ${node.name} (${node.kind})\n   Selector: { "symbol": ${JSON.stringify(node.name)}, "file": ${JSON.stringify(node.filePath)}, "line": ${node.startLine} }${qualified}${signature}`;
 }
 
 function formatNode(node: Node): string {
   return `${node.name} (${node.kind}) at ${node.filePath}:${node.startLine}`;
 }
 
-function sortRelated(nodes: RelatedNode[]): RelatedNode[] {
-  return [...nodes].sort((a, b) => compareNodes(a.node, b.node));
+function groupRelations(relations: RelatedNode[]): RelatedGroup[] {
+  const grouped = new Map<string, { node: Node; edgeKinds: Set<string> }>();
+  for (const relation of relations) {
+    const current = grouped.get(relation.node.id) ?? { node: relation.node, edgeKinds: new Set<string>() };
+    current.edgeKinds.add(relation.edge?.kind ?? "references");
+    grouped.set(relation.node.id, current);
+  }
+  return [...grouped.values()]
+    .map(({ node, edgeKinds }) => ({ node, edgeKinds: [...edgeKinds].sort() }))
+    .sort((a, b) => compareNodes(a.node, b.node));
 }
 
 function sortNodes(nodes: Node[]): Node[] {
   return [...nodes].sort(compareNodes);
+}
+
+function sortCandidates(nodes: Node[]): Node[] {
+  return [...nodes].sort((a, b) => candidatePriority(a) - candidatePriority(b) || compareNodes(a, b));
+}
+
+function candidatePriority(node: Node): number {
+  return node.kind === "file" ? 2 : node.kind === "import" ? 1 : 0;
+}
+
+function candidateLabel(node: Node): string {
+  return node.kind === "file" ? "File node" : node.kind === "import" ? "Import node" : "Definition";
 }
 
 function compareNodes(a: Node, b: Node): number {
@@ -202,5 +223,5 @@ function validateLine(value: unknown, label: string): number | undefined {
 }
 
 function caveat(): string {
-  return "\nStatic indexed graph evidence only. It can omit unresolved, generated, dynamic, or runtime behavior.";
+  return "\nTarget selection uses exact matching within a bounded candidate search. Static graph relationships can omit unresolved, generated, dynamic, or runtime behavior and can contain ambiguous or incorrect resolutions. They are not runtime proof.";
 }

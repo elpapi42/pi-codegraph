@@ -59,9 +59,9 @@ test("analyzes one exact symbol with direct neighbors, residual impact, and test
   const output = runAnalyzeCode(graph() as never, { target: { symbol: "loginUser" } });
   assert.match(output, /## Code Analysis/);
   assert.match(output, /Target: loginUser \(function\)/);
-  assert.match(output, /## Direct Callers \(1 of 1\)/);
+  assert.match(output, /## Incoming Relationships \(1 of 1\)/);
   assert.match(output, /handleSubmit \(function\) at src\/ui\.ts:20 --calls→ loginUser/);
-  assert.match(output, /## Direct Callees \(1 of 1\)/);
+  assert.match(output, /## Outgoing Relationships \(1 of 1\)/);
   assert.match(output, /loginUser --calls→ createSession \(function\) at src\/session\.ts:3/);
   assert.match(output, /## Wider Impact \(2 of 2\)/);
   assert.match(output, /refreshSession/);
@@ -71,7 +71,39 @@ test("analyzes one exact symbol with direct neighbors, residual impact, and test
   assert.doesNotMatch(widerImpact, /createSession/);
   assert.match(output, /## Test Files Found in This Graph Neighborhood/);
   assert.match(output, /test\/auth\.test\.ts/);
+  assert.match(output, /Target selection uses exact matching within a bounded candidate search/);
+  assert.match(output, /relationships can omit .* and can contain ambiguous or incorrect resolutions/);
   assert.doesNotMatch(output, /```/);
+});
+
+test("groups repeated direct relationships by node and preserves distinct edge kinds", () => {
+  const login = node({ id: "login" });
+  const caller = node({ id: "caller", name: "handleSubmit", filePath: "src/ui.ts", startLine: 20 });
+  const callee = node({ id: "callee", name: "createSession", filePath: "src/session.ts", startLine: 3 });
+  const relationGraph = {
+    searchNodes: () => [{ node: login, score: 1 }],
+    getCallers: () => [
+      { node: caller, edge: { kind: "calls" } },
+      { node: caller, edge: { kind: "calls" } },
+      { node: caller, edge: { kind: "references" } },
+    ],
+    getCallees: () => [
+      { node: callee, edge: { kind: "references" } },
+      { node: callee, edge: { kind: "calls" } },
+      { node: callee, edge: { kind: "calls" } },
+    ],
+    getImpactRadius: () => ({ nodes: new Map([[login.id, login]]), edges: [] }),
+    findPath: () => null,
+  };
+
+  const output = runAnalyzeCode(relationGraph as never, { target: { symbol: "loginUser" } });
+
+  assert.match(output, /## Incoming Relationships \(1 of 1\)/);
+  assert.match(output, /handleSubmit \(function\) at src\/ui\.ts:20 --calls, references→ loginUser/);
+  assert.match(output, /## Outgoing Relationships \(1 of 1\)/);
+  assert.match(output, /loginUser --calls, references→ createSession \(function\) at src\/session\.ts:3/);
+  assert.equal((output.match(/handleSubmit \(function\) at src\/ui\.ts:20/g) ?? []).length, 1);
+  assert.equal((output.match(/createSession \(function\) at src\/session\.ts:3/g) ?? []).length, 1);
 });
 
 test("returns candidates without traversal for partial, missing, and duplicate selectors", () => {
@@ -93,6 +125,28 @@ test("returns candidates without traversal for partial, missing, and duplicate s
   const missing = runAnalyzeCode(candidateGraph as never, { target: { symbol: "missing" } });
   assert.match(missing, /No likely code-symbol candidates found/);
   assert.equal(traversed, false);
+});
+
+test("ranks definition candidates before import and file nodes", () => {
+  const definition = node({ id: "definition", name: "loginHandler", filePath: "src/z-handler.ts", startLine: 12 });
+  const importNode = node({ id: "import", name: "loginBinding", kind: "import", filePath: "src/a-import.ts", startLine: 1 });
+  const fileNode = node({ id: "file", name: "loginModule", kind: "file", filePath: "src/b-login.ts", startLine: 1 });
+  const candidateGraph = {
+    searchNodes: () => [{ node: fileNode, score: 1 }, { node: importNode, score: 1 }, { node: definition, score: 1 }],
+    getCallers: () => { throw new Error("candidate output must not traverse"); },
+    getCallees: () => { throw new Error("candidate output must not traverse"); },
+    getImpactRadius: () => { throw new Error("candidate output must not traverse"); },
+    findPath: () => { throw new Error("candidate output must not traverse"); },
+  };
+
+  const output = runAnalyzeCode(candidateGraph as never, { target: { symbol: "login" } });
+
+  assert.match(output, /## Candidates \(3 of 3\)/);
+  assert.match(output, /- Definition: loginHandler \(function\)/);
+  assert.match(output, /- Import node: loginBinding \(import\)/);
+  assert.match(output, /- File node: loginModule \(file\)/);
+  assert.ok(output.indexOf("Definition: loginHandler") < output.indexOf("Import node: loginBinding"));
+  assert.ok(output.indexOf("Import node: loginBinding") < output.indexOf("File node: loginModule"));
 });
 
 test("does not traverse when a related selector is ambiguous", () => {
@@ -160,7 +214,7 @@ test("caps graph sections and long graph paths", () => {
     findPath: (from: string, to: string) => from === "target" && to === "path-20" ? longPath.map((item, index) => ({ node: item, edge: index === 0 ? null : { kind: "calls" } })) : null,
   };
   const output = runAnalyzeCode(cappedGraph as never, { target: { symbol: "target" }, related: { symbol: "path20" } });
-  assert.match(output, /## Direct Callers \(20 of 21\)/);
+  assert.match(output, /## Incoming Relationships \(20 of 21\)/);
   assert.match(output, /Truncated after 20 entries/);
   assert.match(output, /Path truncated after 20 of 21 edges/);
 });
