@@ -10,6 +10,9 @@ import { errorResult, textResult } from "../src/result.js";
 
 interface RegisteredTool {
   name: string;
+  description?: string;
+  promptSnippet?: string;
+  promptGuidelines?: string[];
   parameters?: unknown;
   renderCall?: (args: Record<string, unknown>, theme: FakeTheme, context: { lastComponent?: unknown }) => { render(width: number): string[] };
   execute: (
@@ -52,6 +55,21 @@ function getTool(tools: RegisteredTool[], name: string): RegisteredTool {
   const tool = tools.find((candidate) => candidate.name === name);
   assert.ok(tool, `${name} should be registered`);
   return tool;
+}
+
+function schemaProperty(schema: unknown, name: string): Record<string, unknown> {
+  assert.ok(schema && typeof schema === "object", "schema should be an object");
+  const properties = (schema as { properties?: unknown }).properties;
+  assert.ok(properties && typeof properties === "object", "schema should have properties");
+  const property = (properties as Record<string, unknown>)[name];
+  assert.ok(property && typeof property === "object", `schema should have ${name}`);
+  return property as Record<string, unknown>;
+}
+
+function schemaHasProperty(schema: unknown, name: string): boolean {
+  if (!schema || typeof schema !== "object") return false;
+  const properties = (schema as { properties?: unknown }).properties;
+  return Boolean(properties && typeof properties === "object" && Object.hasOwn(properties, name));
 }
 
 async function executeTool(tool: RegisteredTool, params: Record<string, unknown>, cwd = "/repo") {
@@ -439,32 +457,51 @@ test("symbol misses are normal non-error markdown results", async () => {
   assert.match(result.content[0]?.text ?? "", /not found/);
 });
 
-test("explore_code is registered with its focused schema and guidance", () => {
+test("explore_code describes free-form query patterns and indexed-code limits", () => {
   const fake = createFakePi();
   registerTools(fake.pi as never, new StaticRuntime(createSymbolGraph()) as unknown as CodeGraphRuntime);
   const tool = getTool(fake.tools, "explore_code");
   const serialized = JSON.stringify(tool.parameters);
+  const query = schemaProperty(tool.parameters, "query");
 
-  assert.match(serialized, /Ask about indexed code behavior/);
-  assert.match(JSON.stringify(tool), /returned source as already read/);
-  assert.match(JSON.stringify(tool), /exact project-relative paths and symbols when they are known/);
-  assert.match(JSON.stringify(tool), /can be noisy in multi-repository or duplicate-code indexes/);
-  assert.match(JSON.stringify(tool), /Verify every returned file path/);
-  assert.doesNotMatch(serialized, /projectPath/);
-  assert.doesNotMatch(serialized, /mode/);
-  assert.doesNotMatch(serialized, /action/);
+  assert.match(tool.description ?? "", /ranked source context/);
+  assert.match(tool.description ?? "", /not exhaustive/);
+  assert.match(tool.description ?? "", /verify every returned file path/i);
+  assert.match(tool.description ?? "", /read, rg, or find/);
+  assert.match(String(query.description), /One free-form indexed-code query/);
+  assert.match(String(query.description), /how does login create and validate sessions/);
+  assert.match(String(query.description), /AuthService loginUser createSession/);
+  assert.match(String(query.description), /src\/auth\/session\.ts createSession refreshSession/);
+  assert.match(String(query.description), /query patterns, not operation modes or formal syntax/);
+  assert.match(JSON.stringify(tool.promptGuidelines), /When known, include exact project-relative paths and symbol names/);
+  assert.equal(schemaHasProperty(tool.parameters, "projectPath"), false);
+  assert.equal(schemaHasProperty(tool.parameters, "mode"), false);
+  assert.equal(schemaHasProperty(tool.parameters, "action"), false);
 });
 
-test("analyze_code has only automatic symbol selectors", () => {
+test("analyze_code describes target-only and two-selector behavior", () => {
   const fake = createFakePi();
   registerTools(fake.pi as never, new StaticRuntime(createSymbolGraph()) as unknown as CodeGraphRuntime);
   const tool = getTool(fake.tools, "analyze_code");
   const serialized = JSON.stringify(tool.parameters);
+  const target = schemaProperty(tool.parameters, "target");
+  const related = schemaProperty(tool.parameters, "related");
 
-  assert.match(JSON.stringify(tool), /automatic bounded relationships, impact, and graph connections/);
-  assert.match(JSON.stringify(tool), /ambiguous or incorrect resolutions/);
-  assert.match(JSON.stringify(tool), /file-local resolution/);
-  assert.match(JSON.stringify(tool), /file and line from explore_code or returned candidates whenever available/);
+  assert.match(tool.description ?? "", /With target only/);
+  assert.match(tool.description ?? "", /With related, resolves both selectors first/);
+  assert.match(tool.description ?? "", /performs no graph traversal/);
+  assert.match(tool.description ?? "", /not runtime proof/);
+  assert.match(String(target.description), /Primary symbol to analyze/);
+  assert.match(String(target.description), /bounded index/);
+  assert.match(String(target.description), /file and line.*exact file-local selection/);
+  assert.match(String(related.description), /Optional second symbol/);
+  assert.match(String(related.description), /same graph neighborhood for each/);
+  assert.match(String(related.description), /graph paths in both directions/);
+  assert.match(String(related.description), /performs no traversal/);
+  assert.match(String(schemaProperty(target, "symbol").description), /partial or ambiguous name returns candidates/);
+  assert.match(String(schemaProperty(target, "file").description), /resolves symbols only in this file/);
+  assert.match(String(schemaProperty(target, "line").description), /definition start line/);
+  assert.match(JSON.stringify(tool.promptGuidelines), /does not return source/);
   assert.match(serialized, /target/);
   assert.match(serialized, /related/);
   for (const forbidden of ["operation", "depth", "limit", "mode", "projectPath", "includeCode"]) {

@@ -21,17 +21,28 @@ This project now depends on the published `@colbymchenry/codegraph` npm SDK pack
 
 ### Experimental `explore_code`
 
-`explore_code` is an experimental single-call view of indexed code. Use it for broad behavior, ranked context, and source. It accepts a natural-language question or symbol and file names, then returns CodeGraph 1.6 source, relationships, call paths, and blast-radius output. Include exact project-relative paths and symbols when known. Broad queries can be noisy in multi-repository or duplicate-code indexes, so verify every returned file path. It runs the extension-local public `codegraph` CLI after this extension has prepared the active project index. The eight existing tools remain available during this experiment.
+`explore_code` is an experimental single-call view of indexed code. Use it to understand broad behavior and retrieve ranked source context. It returns CodeGraph 1.6 line-numbered source, relationships, call paths, and blast-radius leads. These results are ranked, not exhaustive. Broad queries can be noisy in multi-repository or duplicate-code indexes, so verify every returned file path.
 
-The CLI subprocess has startup cost and does not retain upstream MCP exploration-session deduplication between calls. It operates only on the active CodeGraph root. Cancellation is best effort because the package shim can start a descendant process. Use read for known files and filesystem or text-search commands such as `rg` or `find` for Markdown, general configuration, generated runtime wiring, and exhaustive file inventories.
+Its `query` is one free-form query. Use one of these patterns, not operation modes or formal syntax:
+
+- Behavior question: `how does login create and validate sessions`
+- Focused symbols: `AuthService loginUser createSession`
+- Exact path plus symbols: `src/auth/session.ts createSession refreshSession`
+
+Include exact project-relative paths and symbols when known. It runs the extension-local public `codegraph` CLI after this extension has prepared the active project index. The eight existing tools remain available during this experiment.
+
+The CLI subprocess has startup cost and does not retain upstream MCP exploration-session deduplication between calls. It operates only on the active CodeGraph root. Cancellation is best effort because the package shim can start a descendant process. Use `read`, `rg`, or `find` for known files, Markdown, general configuration, generated runtime wiring, and exhaustive file inventories.
 
 ### Experimental `analyze_code`
 
-`analyze_code` is an experimental automatic static-graph view for one or two code symbols. Use it for bounded relationships, impact, and graph connections. It has a required `target` selector and an optional `related` selector. Each selector contains `symbol` and may include exact project-relative `file` and definition `line` values from `explore_code` or returned candidates. When a selector has `file`, the tool resolves symbols only in that file, so a valid file-and-line selector does not depend on global ranking.
+`analyze_code` is an experimental automatic static-graph view for one or two code symbols. Use it for bounded relationships, impact, and graph connections. It has a required `target` selector and an optional `related` selector.
 
-For one resolved symbol, it returns incoming and outgoing relationships, residual bounded impact, and test-file paths found in that graph neighborhood. For two resolved symbols, it returns both neighborhoods and a directed graph path in each direction when available. It never returns full source. It chooses graph operations and bounds internally, so callers do not select an operation, depth, limit, or direction.
+- `target` is the primary symbol. Symbol alone searches a bounded index. Add exact project-relative `file` and definition `line` from `explore_code` or returned candidates for exact file-local selection.
+- `related` is an optional second symbol. When present, the tool resolves both selectors first, returns the same graph neighborhood for each, then returns directed graph paths in both directions.
 
-If a symbol is partial, missing, or ambiguous, the tool returns up to 20 selector-ready candidates and performs no traversal. It labels definition candidates separately from import and file nodes, and ranks definitions first. Target selection uses exact matching within a bounded candidate search, except file selectors use the complete indexed file. Relationships are static indexed evidence that can omit dynamic, generated, unresolved, and unindexed behavior and can contain ambiguous or incorrect resolutions. They are not runtime proof. Existing narrow tools remain available during this experiment.
+With `target` only, the tool returns incoming and outgoing relationships, residual bounded impact, and test-file paths found in the target's graph neighborhood. It does not return source. It chooses graph operations and bounds internally, so callers do not select an operation, depth, limit, or direction.
+
+If either selector is partial, missing, or ambiguous, the tool returns up to 20 selector-ready candidates and performs no traversal. It labels definition candidates separately from import and file nodes, and ranks definitions first. Target selection uses exact matching within a bounded candidate search, except file selectors use the complete indexed file. Relationships are static indexed evidence that can omit dynamic, generated, unresolved, and unindexed behavior and can contain ambiguous or incorrect resolutions. They are not runtime proof. Existing narrow tools remain available during this experiment.
 
 ### CodeGraph 1.6 upgrade
 
@@ -109,14 +120,14 @@ Use it to find likely entry points before reading files.
 
 ### `analyze_code`
 
-Analyze one or two selected code symbols without selecting an operation. Use it before changing a known symbol when static callers, callees, bounded impact, or a graph connection matter.
+Analyze one or two selected code symbols without selecting an operation. Use it before changing a known symbol when static relationships, bounded impact, or a graph connection matter. It does not return source.
 
 Inputs:
 
-- `target`: required `{ symbol, file?, line? }` selector.
-- `related`: optional selector. When present, the output includes directed graph paths in both directions when they exist.
+- `target`: required primary `{ symbol, file?, line? }` selector. Symbol alone searches a bounded index. Pass `file` and `line` from `explore_code` or returned candidates for exact file-local selection.
+- `related`: optional second selector. When present, both selectors must resolve before traversal. The output includes the same neighborhood for each selector and directed graph paths in both directions when they exist.
 
-A selector with one exact match runs analysis. Pass `file` and `line` from `explore_code` or returned candidates whenever available. When `file` is set, `analyze_code` resolves symbols only in that exact safe project-relative code file. Line selectors must be exact positive definition start lines. A partial, missing, or ambiguous selector returns candidates with exact `symbol`, `file`, and `line` values for a corrected call.
+With target only, the output contains incoming and outgoing relationships, wider impact, and graph-neighborhood tests. A partial, missing, or ambiguous selector returns candidates with exact `symbol`, `file`, and `line` values and performs no traversal. When `file` is set, `analyze_code` resolves symbols only in that exact safe project-relative code file. Line selectors must be exact positive definition start lines. Relationships and paths are static indexed evidence, not runtime proof.
 
 ### `files`
 

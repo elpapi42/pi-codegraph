@@ -84,19 +84,23 @@ const ExploreParams = Type.Object({
 });
 
 const ExploreCodeParams = Type.Object({
-  query: Type.String({ description: "Ask about indexed code behavior, or give known symbol names and exact project-relative code paths. Use paths and symbols together when known, for example: \"src/auth/session.ts createSession\"." }),
+  query: Type.String({ description: "One free-form indexed-code query. Use a behavior question such as \"how does login create and validate sessions\", focused symbols such as \"AuthService loginUser createSession\", or an exact path plus symbols such as \"src/auth/session.ts createSession refreshSession\". These are query patterns, not operation modes or formal syntax. Include paths and symbols when known." }),
   maxFiles: Type.Optional(Type.Number({ description: "Maximum source files to return. Omit it to let CodeGraph choose an adaptive limit, or set 1 through 20." })),
 });
 
-const AnalyzeSelector = Type.Object({
-  symbol: Type.String({ description: "Exact or likely code symbol name. A partial or ambiguous name returns candidates instead of analysis." }),
-  file: Type.Optional(Type.String({ description: "Exact project-relative code file path from explore_code or analyze_code candidates. When set, analyze_code resolves symbols only in this file." })),
-  line: Type.Optional(Type.Number({ description: "Exact definition start line from explore_code or analyze_code candidates. Use with file to select one definition." })),
-});
+function analyzeSelector(description: string) {
+  return Type.Object({
+    symbol: Type.String({ description: "Exact or likely code symbol name. A partial or ambiguous name returns candidates instead of analysis." }),
+    file: Type.Optional(Type.String({ description: "Exact project-relative code file path from explore_code or analyze_code candidates. When set, analyze_code resolves symbols only in this file." })),
+    line: Type.Optional(Type.Number({ description: "Exact definition start line from explore_code or analyze_code candidates. Use with file to select one definition." })),
+  }, { description });
+}
 
 const AnalyzeCodeParams = Type.Object({
-  target: AnalyzeSelector,
-  related: Type.Optional(AnalyzeSelector),
+  target: analyzeSelector("Primary symbol to analyze. Symbol alone searches a bounded index. Add file and line from explore_code or candidates for exact file-local selection."),
+  related: Type.Optional(analyzeSelector("Optional second symbol. When supplied, analyze_code resolves both selectors first, returns the same graph neighborhood for each, then returns graph paths in both directions. If either selector is not unique, it returns candidates and performs no traversal.")),
+}, {
+  description: "Analyze one primary symbol, or compare it with one optional related symbol. With target only, returns the target's graph neighborhood without source. With related, resolves both selectors first, returns the same neighborhood for each, then returns graph paths in both directions. If either selector is partial or ambiguous, returns candidates and performs no graph traversal.",
 });
 
 interface CodeGraphToolSpec<TParams extends TSchema> {
@@ -185,14 +189,15 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
   registerCodeGraphTool(pi, runtime, {
     name: "explore_code",
     label: "Explore Indexed Code",
-    description: "Explore indexed code for broad behavior, ranked context, and source. Returns current line-numbered source, relationships, call paths including supported dynamic dispatch, and blast radius. Use exact project-relative paths and symbols when they are known. Broad queries can be noisy in multi-repository or duplicate-code indexes, so verify every returned file path before using it. Treat returned source as already read. This tool indexes code, not Markdown, general configuration, generated runtime wiring, or exhaustive filesystem inventories. Use read for known files and filesystem or text-search commands such as rg or find for those surfaces.",
-    promptSnippet: "explore_code: understand indexed code and retrieve ranked source context; verify paths in duplicate-code indexes.",
+    description: "Understand indexed code behavior and retrieve ranked source context in one call. Returns current line-numbered source plus ranked relationships, call paths, and blast-radius leads. The result is not exhaustive and can be noisy in multi-repository or duplicate-code indexes, so verify every returned file path before using it. Include exact project-relative paths and symbols when known. This tool indexes code only. Use read, rg, or find for Markdown, configuration, generated runtime wiring, and exact file inventories.",
+    promptSnippet: "explore_code: understand indexed code and retrieve ranked source context; use paths and symbols when known, then verify returned paths.",
     promptGuidelines: [
-      "Use `explore_code` for broad indexed-code behavior, architecture, bugs, flows, and source context.",
-      "When known, include exact project-relative paths and symbol names in the query to focus retrieval.",
-      "Broad queries can be noisy in multi-repository or duplicate-code indexes. Verify every returned file path before relying on it.",
+      "Use `explore_code` to understand indexed-code behavior, architecture, bugs, flows, or surrounding source.",
+      "The query is free-form: use a behavior question, focused symbols, or an exact project-relative path plus symbols. These are query patterns, not modes.",
+      "When known, include exact project-relative paths and symbol names to focus retrieval.",
+      "Results are ranked and non-exhaustive. Broad queries can be noisy in multi-repository or duplicate-code indexes. Verify every returned file path before relying on it.",
       "Treat source returned by `explore_code` as already read. Use a narrower second query only for a specific gap.",
-      "Use read for known files and filesystem or text-search commands such as rg or find for Markdown, configuration, generated runtime wiring, and exhaustive file inventories because CodeGraph indexes code only.",
+      "Use read, rg, or find for Markdown, configuration, generated runtime wiring, and exact file inventories because CodeGraph indexes code only.",
     ],
     parameters: ExploreCodeParams,
     run: runExploreCode,
@@ -201,13 +206,14 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
   registerCodeGraphTool(pi, runtime, {
     name: "analyze_code",
     label: "Analyze Code Symbols",
-    description: "Analyze one or two indexed code symbols with automatic bounded relationships, impact, and graph connections. For one resolved symbol, returns incoming and outgoing relationships, wider impact, and test files in its graph neighborhood. For two resolved symbols, also returns graph paths in both directions. Pass file and line from explore_code or returned candidates whenever available. When file is set, analyze_code resolves symbols only in that file. If either symbol is ambiguous or partial, returns selector-ready candidates without analysis. Relationships are static indexed evidence that can contain ambiguous or incorrect resolutions and are not runtime proof. This tool does not include source code.",
-    promptSnippet: "analyze_code: automatically inspect bounded static relationships, impact, and connections for one or two symbols; file uses file-local resolution.",
+    description: "Analyze one or two indexed code symbols without choosing a mode. With target only, returns incoming and outgoing relationships, wider impact, and test files in the target's graph neighborhood without source. With related, resolves both selectors first, returns the same neighborhood for each, then returns graph paths in both directions. Pass file and line from explore_code or returned candidates whenever available. When file is set, analyze_code resolves symbols only in that file. If either selector is partial or ambiguous, returns selector-ready candidates and performs no graph traversal. Relationships are static indexed evidence that can omit behavior or contain ambiguous or incorrect resolutions. They are not runtime proof.",
+    promptSnippet: "analyze_code: inspect automatic bounded static neighborhoods for one symbol, or two neighborhoods plus paths between them; ambiguity returns candidates.",
     promptGuidelines: [
-      "Use `analyze_code` for automatic bounded static relationships, impact, and a graph connection between one or two symbols.",
+      "Use `analyze_code` for bounded static relationships, impact, and graph-neighborhood tests for one known symbol. It does not return source.",
+      "Add `related` when you need the same neighborhood for a second symbol and graph paths in both directions between the two symbols.",
       "Pass file and line from explore_code or returned candidates whenever available. When file is set, analyze_code resolves symbols only in that file.",
-      "Use `explore_code` for source and ranked code context. Use analyze_code for bounded static graph evidence without source.",
-      "Treat graph paths and relationships as static indexed evidence. They can omit behavior or contain ambiguous or incorrect resolutions, and are not proof of runtime execution.",
+      "If either selector is partial or ambiguous, select a returned candidate and call again. No graph traversal occurs until both selectors resolve uniquely.",
+      "Use `explore_code` for source and ranked code context. Treat analyze_code paths and relationships as static evidence, not runtime proof.",
     ],
     parameters: AnalyzeCodeParams,
     run: (cg, params) => runAnalyzeCode(cg, params),
