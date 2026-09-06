@@ -13,7 +13,7 @@
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@colbymchenry/codegraph": "^1.0.1"
+    "@colbymchenry/codegraph": "^1.6.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

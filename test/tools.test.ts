@@ -261,6 +261,40 @@ test("files tool returns real CodeGraph fixture tree and filters", async () => {
   }
 });
 
+test("all eight tools return real indexed fixture facts", async () => {
+  const fixture = await createIndexedFixture();
+  try {
+    const fake = createFakePi();
+    registerTools(fake.pi as never, new CodeGraphRuntime());
+
+    const results = await Promise.all([
+      executeTool(getTool(fake.tools, "search"), { query: "loginUser" }, fixture.root),
+      executeTool(getTool(fake.tools, "files"), { format: "flat" }, fixture.root),
+      executeTool(getTool(fake.tools, "context"), { task: "understand login authentication" }, fixture.root),
+      executeTool(getTool(fake.tools, "explore"), { query: "loginUser createSession" }, fixture.root),
+      executeTool(getTool(fake.tools, "callers"), { symbol: "loginUser" }, fixture.root),
+      executeTool(getTool(fake.tools, "callees"), { symbol: "loginUser" }, fixture.root),
+      executeTool(getTool(fake.tools, "impact"), { symbol: "loginUser", depth: 2 }, fixture.root),
+      executeTool(getTool(fake.tools, "node"), { symbol: "loginUser", includeCode: true }, fixture.root),
+    ]);
+    const text = results.map((result) => result.content[0]?.text ?? "");
+
+    for (const result of results) assert.equal(result.isError, undefined);
+    assert.match(text[0]!, /loginUser/);
+    assert.match(text[1]!, /src\/auth\.ts/);
+    assert.match(text[2]!, /loginUser/);
+    assert.match(text[3]!, /loginUser/);
+    assert.doesNotMatch(text[4]!, /No callers found/);
+    assert.match(text[4]!, /login \(method\)/);
+    assert.match(text[5]!, /createSession/);
+    assert.doesNotMatch(text[6]!, /No impact found/);
+    assert.match(text[6]!, /login:10/);
+    assert.match(text[7]!, /return createSession/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("node, callers, callees, impact, context, and explore produce representative markdown", async () => {
   const tools = registerWithGraph(createSymbolGraph());
 

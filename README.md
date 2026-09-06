@@ -19,6 +19,17 @@ It does **not** shell out to the CodeGraph CLI, start the CodeGraph MCP server, 
 
 This project now depends on the published `@colbymchenry/codegraph` npm SDK package rather than a local `./codegraph` clone. The extension remains local-development oriented because it is a private Pi package, but a fresh clone no longer needs the CodeGraph repository initialized or built just to install, typecheck, or run the extension.
 
+### CodeGraph 1.6 upgrade
+
+The runtime still initializes empty projects and syncs ordinary changes automatically. After upgrading an existing project index from an older CodeGraph engine, rebuild it once so CodeGraph 1.6 applies its newer extraction and derived graph behavior:
+
+```bash
+cd /home/elpapi/.pi/agent/extensions/pi-codegraph
+npx --no-install codegraph index /path/to/project
+```
+
+This is a one-time upgrade action, not a normal startup step. If you restore an older CodeGraph version, rebuild that project's index with the restored version because downgrade migration is not supported.
+
 ## Prerequisites
 
 - Node.js `>=22.19.0 <25`.
