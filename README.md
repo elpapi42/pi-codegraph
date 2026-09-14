@@ -1,15 +1,15 @@
 # pi-codegraph
 
-`pi-codegraph` is a local [Pi](https://github.com/earendil-works/pi-coding-agent) extension for fresh CodeGraph intelligence in Pi's active workspace.
+`pi-codegraph` is a local [Pi](https://github.com/earendil-works/pi-coding-agent) extension for fresh CodeGraph intelligence in Pi's active workspace or an existing indexed external project.
 
-It automatically finds or creates the active CodeGraph root, indexes an empty project, and synchronizes changed files before each query. It exposes exactly two code-navigation tools and two management commands:
+Without `projectPath`, it automatically finds or creates the active CodeGraph root, indexes an empty project, and synchronizes changed files before each query. It exposes exactly two code-navigation tools and two management commands:
 
 - `explore_code`
 - `analyze_code`
 - `/cg:status`
 - `/cg:uninit`
 
-The extension operates only on Pi's active `ctx.cwd`. It has no `projectPath` parameter, does not start an MCP server, and does not import CodeGraph private modules.
+The extension uses Pi's active `ctx.cwd` by default. Both query tools also accept `projectPath` to reuse an existing index outside that directory. It does not start an MCP server or import CodeGraph private modules.
 
 ## Tools
 
@@ -27,7 +27,9 @@ These are query patterns, not modes or formal syntax. Include exact project-rela
 
 `maxFiles` is optional. Omit it for CodeGraph's adaptive result size, or set it from 1 through 20.
 
-`explore_code` runs the public CodeGraph 1.6 CLI through the installed package shim after this extension prepares the active index. The subprocess has startup cost and no MCP exploration-session reuse. Cancellation is best effort because the shim can start a descendant process.
+Both tools accept optional `projectPath`: a directory inside code to inspect outside Pi's active working directory. The tool resolves absolute paths directly and relative paths from `ctx.cwd`, then reuses the nearest existing CodeGraph index in that directory or its parents. This selects an indexed project, not a subtree, so results can include other indexed files. A supplied path never initializes or rebuilds a missing or empty index, though it can synchronize an existing nonempty index. If no usable index exists, the tool tells the agent to use `read`, `rg`, or `find` for code under that path. Successful external queries identify the selected index root, and returned file paths are relative to it.
+
+`explore_code` runs the public CodeGraph 1.6 CLI through the installed package shim after this extension prepares the selected index. The subprocess has startup cost and no MCP exploration-session reuse. Cancellation is best effort because the shim can start a descendant process.
 
 ### `analyze_code`
 
@@ -52,7 +54,7 @@ CodeGraph indexes code. Use `read`, `rg`, or `find` for known files, Markdown, c
 
 ## Readiness and commands
 
-Before each tool query, the runtime:
+Before each tool query without `projectPath`, the runtime:
 
 1. Finds the nearest `.codegraph/codegraph.db` above `ctx.cwd`.
 2. Initializes exactly at `ctx.cwd` if no root exists.
@@ -64,7 +66,7 @@ Before each tool query, the runtime:
 
 `/cg:uninit [--force]` removes the active `.codegraph/` directory. Without `--force`, it requires UI confirmation and refuses non-interactive removal. It waits for active readiness work when forced.
 
-There is no `/cg:init`. Tool calls initialize, index, and synchronize automatically.
+There is no `/cg:init`. Tool calls without `projectPath` initialize, index, and synchronize automatically. `/cg:status` and `/cg:uninit` always apply only to the active working directory.
 
 ## CodeGraph 1.6 upgrade
 
@@ -93,7 +95,7 @@ npm test
 npm pack --dry-run
 ```
 
-The test suite covers two-tool registration, active-path-only schemas, automatic readiness, command behavior, real-index `explore_code`, one- and two-selector `analyze_code`, ambiguity and file-local selection, graph-path direction, bounded output, and retained metadata.
+The test suite covers two-tool registration, `projectPath` selection and reuse-only failures, automatic active-path readiness, command behavior, real-index `explore_code`, one- and two-selector `analyze_code`, ambiguity and file-local selection, graph-path direction, bounded output, and retained metadata.
 
 ## Project structure
 

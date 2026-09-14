@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import {
   CodeGraph,
@@ -31,6 +32,7 @@ export interface ReadyContext {
 }
 
 export interface ReadyOptions {
+  projectPath?: string;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
 }
@@ -57,12 +59,14 @@ interface ProjectState {
   cg?: CodeGraphInstance;
   status: CodeGraphStatus;
   readyPromise?: Promise<CodeGraphInstance>;
+  readyReuseOnly?: boolean;
   syncPromise?: Promise<void>;
   lastError?: string;
   lastIndexResult?: IndexResult;
   lastSyncResult?: SyncResult;
   lastReadyAt?: number;
   zeroIndexBlocked?: boolean;
+  removing?: boolean;
 }
 
 interface UninitContext {
@@ -101,10 +105,69 @@ export function resolveCodeGraphRoot(
   const nearest = sdk.findNearestCodeGraphRoot(resolvedStart);
 
   if (nearest && sdk.isInitialized(nearest)) {
-    return { root: nearest, initialized: true };
+    return { root: canonicalizeExistingRoot(nearest), initialized: true };
   }
 
-  return { root: resolvedStart, initialized: false };
+  return { root: canonicalizeExistingRoot(resolvedStart), initialized: false };
+}
+
+function resolveSuppliedProjectPath(
+  cwd: string,
+  projectPath: string,
+  sdk: Pick<CodeGraphSdk, "findNearestCodeGraphRoot" | "isInitialized">,
+): string {
+  if (projectPath.trim().length === 0) {
+    throw new Error("projectPath must be an existing directory.");
+  }
+
+  const requestedPath = path.resolve(cwd, projectPath);
+  let canonicalPath: string;
+  try {
+    canonicalPath = fs.realpathSync.native(requestedPath);
+  } catch (error) {
+    throw projectPathError(requestedPath, error);
+  }
+
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(canonicalPath);
+  } catch (error) {
+    throw projectPathError(requestedPath, error);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`projectPath must be an existing directory: ${JSON.stringify(requestedPath)}.`);
+  }
+
+  const nearest = sdk.findNearestCodeGraphRoot(canonicalPath);
+  if (!nearest || !sdk.isInitialized(nearest)) {
+    throw new Error(missingIndexMessage(requestedPath));
+  }
+
+  return canonicalizeExistingRoot(nearest);
+}
+
+function canonicalizeExistingRoot(root: string): string {
+  try {
+    return fs.realpathSync.native(root);
+  } catch {
+    return path.resolve(root);
+  }
+}
+
+function projectPathError(requestedPath: string, error: unknown): Error {
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+  if (code === "ENOENT") {
+    return new Error(`projectPath must be an existing directory: ${JSON.stringify(requestedPath)}.`);
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function missingIndexMessage(requestedPath: string): string {
+  return `No existing CodeGraph data was found for projectPath: ${JSON.stringify(requestedPath)}. Continue the current task by using read, rg, or find to inspect code under this path. Do not retry this path by omitting projectPath; omission targets the active working directory. You can still use CodeGraph tools for other paths that have CodeGraph data.`;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Error("CodeGraph operation was aborted.");
 }
 
 export function countChangedFiles(changes: ChangedFiles): number {
@@ -146,24 +209,41 @@ export class CodeGraphRuntime {
   constructor(private readonly sdk: CodeGraphSdk = defaultSdk) {}
 
   async ensureReady(ctx: ReadyContext, options: ReadyOptions = {}): Promise<CodeGraphInstance> {
-    const { root, initialized } = resolveCodeGraphRoot(ctx.cwd, this.sdk);
-    const state = this.getOrCreateState(root, initialized);
+    throwIfAborted(options.signal);
+    const suppliedProjectPath = options.projectPath;
+    const requestedProjectPath = suppliedProjectPath === undefined ? undefined : path.resolve(ctx.cwd, suppliedProjectPath);
+    const resolution = suppliedProjectPath === undefined
+      ? { ...resolveCodeGraphRoot(ctx.cwd, this.sdk), reuseOnly: false }
+      : { root: resolveSuppliedProjectPath(ctx.cwd, suppliedProjectPath, this.sdk), initialized: true, reuseOnly: true };
+    throwIfAborted(options.signal);
+    const state = this.getOrCreateState(resolution.root, resolution.initialized);
 
-    if (state.readyPromise) return state.readyPromise;
+    while (true) {
+      this.throwIfRemoving(state);
+      if (state.readyPromise) {
+        if (state.readyReuseOnly === resolution.reuseOnly) return state.readyPromise;
+        await state.readyPromise.catch(() => undefined);
+        throwIfAborted(options.signal);
+        this.throwIfRemoving(state);
+        continue;
+      }
 
-    state.readyPromise = this.ensureReadyInner(state, initialized, options)
-      .catch((error) => {
-        if (state.status !== "not_indexed" && state.status !== "not_synced") {
-          state.status = "failed";
-        }
-        state.lastError = errorToMessage(error);
-        throw error;
-      })
-      .finally(() => {
-        state.readyPromise = undefined;
-      });
-
-    return state.readyPromise;
+      const initialized = resolution.reuseOnly ? true : this.sdk.isInitialized(resolution.root);
+      state.readyReuseOnly = resolution.reuseOnly;
+      state.readyPromise = this.ensureReadyInner(state, initialized, requestedProjectPath, resolution.reuseOnly, options)
+        .catch((error) => {
+          if (state.status !== "not_indexed" && state.status !== "not_synced") {
+            state.status = "failed";
+          }
+          state.lastError = errorToMessage(error);
+          throw error;
+        })
+        .finally(() => {
+          state.readyPromise = undefined;
+          state.readyReuseOnly = undefined;
+        });
+      return state.readyPromise;
+    }
   }
 
   async getStatus(cwd: string): Promise<StatusReport> {
@@ -237,20 +317,15 @@ export class CodeGraphRuntime {
 
   async uninitialize(cwd: string, force: boolean, ctx?: UninitContext): Promise<string> {
     const { root, initialized } = resolveCodeGraphRoot(cwd, this.sdk);
-    const state = this.projects.get(root);
+    let state = this.projects.get(root);
+    if (state?.removing) throw new Error("CodeGraph index is currently being removed.");
 
-    if (this.isBusy(state)) {
-      if (!force) {
-        throw new Error("CodeGraph is currently initializing, indexing, or syncing. Retry later or use --force to wait and remove it.");
-      }
-
-      const inFlight: Array<Promise<unknown>> = [];
-      if (state?.readyPromise) inFlight.push(state.readyPromise);
-      if (state?.syncPromise) inFlight.push(state.syncPromise);
-      await Promise.allSettled(inFlight);
+    const wasBusy = this.isBusy(state);
+    if (wasBusy && !force) {
+      throw new Error("CodeGraph is currently initializing, indexing, or syncing. Retry later or use --force to wait and remove it.");
     }
 
-    const currentlyInitialized = initialized || this.sdk.isInitialized(root) || Boolean(state?.cg);
+    const currentlyInitialized = initialized || this.sdk.isInitialized(root) || Boolean(state?.cg) || (force && wasBusy);
     if (!currentlyInitialized) {
       return `CodeGraph is not initialized for ${path.resolve(cwd)}. Nothing to remove.`;
     }
@@ -269,12 +344,29 @@ export class CodeGraphRuntime {
       if (!confirmed) {
         return "CodeGraph uninit cancelled.";
       }
+
+      state = this.projects.get(root) ?? state;
+      if (this.isBusy(state)) {
+        throw new Error("CodeGraph is currently initializing, indexing, or syncing. Retry later or use --force to wait and remove it.");
+      }
     }
 
-    const cg = state?.cg ?? await this.sdk.CodeGraph.open(root);
-    cg.uninitialize();
-    this.projects.delete(root);
-    return `Removed CodeGraph index from ${root}`;
+    state ??= this.getOrCreateState(root, true);
+    state.removing = true;
+    let removed = false;
+    try {
+      if (force) await this.drainState(state);
+      const cg = state.cg ?? await this.sdk.CodeGraph.open(root);
+      if (this.projects.get(root) !== state || !state.removing) {
+        throw new Error("CodeGraph index removal was interrupted.");
+      }
+      cg.uninitialize();
+      this.projects.delete(root);
+      removed = true;
+      return `Removed CodeGraph index from ${root}`;
+    } finally {
+      if (!removed && this.projects.get(root) === state) state.removing = false;
+    }
   }
 
   async closeAll(): Promise<void> {
@@ -312,16 +404,22 @@ export class CodeGraphRuntime {
   private async ensureReadyInner(
     state: ProjectState,
     initialized: boolean,
+    requestedProjectPath: string | undefined,
+    reuseOnly: boolean,
     options: ReadyOptions,
   ): Promise<CodeGraphInstance> {
+    throwIfAborted(options.signal);
+    this.throwIfRemoving(state);
     let cg = state.cg;
 
     if (!initialized && !cg) {
+      if (reuseOnly) throw new Error(missingIndexMessage(requestedProjectPath!));
       state.status = "initializing";
       state.lastError = undefined;
       options.onProgress?.(`CodeGraph: initializing ${state.root}`);
       cg = await this.sdk.CodeGraph.init(state.root, { index: false });
       state.cg = cg;
+      this.throwIfRemoving(state);
       await this.indexAllOrThrow(state, cg, options);
     }
 
@@ -329,10 +427,14 @@ export class CodeGraphRuntime {
       state.lastError = undefined;
       cg = await this.sdk.CodeGraph.open(state.root);
       state.cg = cg;
+      this.throwIfRemoving(state);
     }
 
     const stats = cg.getStats();
     if (stats.fileCount === 0) {
+      if (reuseOnly) {
+        throw new Error(missingIndexMessage(requestedProjectPath!));
+      }
       if (state.zeroIndexBlocked) {
         state.status = "not_indexed";
         state.lastError = state.lastError ?? ZERO_INDEXED_FILES_MESSAGE;
@@ -341,7 +443,9 @@ export class CodeGraphRuntime {
       await this.indexAllOrThrow(state, cg, options);
     }
 
+    throwIfAborted(options.signal);
     await this.ensureSynced(state, cg, options);
+    this.throwIfRemoving(state);
 
     state.status = "ready";
     state.lastError = undefined;
@@ -426,6 +530,19 @@ export class CodeGraphRuntime {
     });
 
     return state.syncPromise;
+  }
+
+  private async drainState(state: ProjectState): Promise<void> {
+    while (state.readyPromise || state.syncPromise) {
+      const inFlight: Array<Promise<unknown>> = [];
+      if (state.readyPromise) inFlight.push(state.readyPromise);
+      if (state.syncPromise) inFlight.push(state.syncPromise);
+      await Promise.allSettled(inFlight);
+    }
+  }
+
+  private throwIfRemoving(state: ProjectState): void {
+    if (state.removing) throw new Error("CodeGraph index is currently being removed.");
   }
 
   private async clearPartialIndex(cg: CodeGraphInstance): Promise<void> {

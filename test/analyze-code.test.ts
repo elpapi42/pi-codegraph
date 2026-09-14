@@ -276,11 +276,13 @@ test("caps graph sections and long graph paths", () => {
 
 test("runs real indexed one- and two-target analysis through public registration", async () => {
   const fixture = await createIndexedFixture();
+  const activeCwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-analyze-active-"));
   try {
     const tool = registeredAnalyzeTool();
-    const single = await tool.execute("call", { target: { symbol: "loginUser", file: "src/auth.ts", line: 2 } }, new AbortController().signal, undefined, { cwd: fixture.root });
+    const single = await tool.execute("call", { target: { symbol: "loginUser", file: "src/auth.ts", line: 2 }, projectPath: path.join(fixture.root, "src") }, new AbortController().signal, undefined, { cwd: activeCwd });
     const singleText = single.content[0]?.text ?? "";
     assert.equal(single.isError, undefined, singleText);
+    assert.match(singleText, new RegExp(`^Indexed project: ${fixture.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.match(singleText, /src\/auth\.ts/);
     assert.match(singleText, /handleSubmit/);
     assert.match(singleText, /createSession/);
@@ -298,5 +300,6 @@ test("runs real indexed one- and two-target analysis through public registration
     assert.match(pairText, /--calls→ loginUser/);
   } finally {
     fixture.cleanup();
+    fs.rmSync(activeCwd, { recursive: true, force: true });
   }
 });

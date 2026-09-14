@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { CodeGraphRuntime, resolveCodeGraphRoot, type ChangedFiles, type CodeGraphSdk } from "../src/runtime.js";
@@ -92,11 +94,13 @@ function createSdk(options: {
   graphs?: Map<string, FakeGraph>;
   onInit?: (root: string) => Promise<FakeGraph> | FakeGraph;
   onOpen?: (root: string) => Promise<FakeGraph> | FakeGraph;
+  isInitializedOverride?: (root: string, call: number) => boolean;
   markInitializedBeforeInitSettles?: boolean;
 } = {}) {
   const initializedRoots = new Set((options.initializedRoots ?? []).map((root) => path.resolve(root)));
   const graphs = options.graphs ?? new Map<string, FakeGraph>();
   const counts: Counts = { init: 0, open: 0 };
+  let isInitializedCalls = 0;
 
   const findNearestCodeGraphRoot = (startPath: string): string | null => {
     let current = path.resolve(startPath);
@@ -111,7 +115,8 @@ function createSdk(options: {
   const sdk = {
     findNearestCodeGraphRoot,
     isInitialized(root: string) {
-      return initializedRoots.has(path.resolve(root));
+      isInitializedCalls += 1;
+      return options.isInitializedOverride?.(root, isInitializedCalls) ?? initializedRoots.has(path.resolve(root));
     },
     CodeGraph: {
       async init(root: string) {
@@ -158,6 +163,316 @@ test("ensureReady initializes exactly at ctx.cwd when no parent root exists", as
   assert.equal(counts.open, 0);
   assert.equal(graphs.get(cwd), graph);
   assert.equal((graph as unknown as FakeGraph).indexAllCalls, 1);
+});
+
+test("ensureReady reuses an external indexed ancestor without initializing it", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const cwd = path.join(fixture, "a");
+  const root = path.join(fixture, "b");
+  const nested = path.join(root, "Z");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(nested, { recursive: true });
+  try {
+    const graph = new FakeGraph(root, 3);
+    graph.changes = { added: [], modified: ["src/auth.ts"], removed: [] };
+    const { sdk, counts } = createSdk({ initializedRoots: [root], graphs: new Map([[root, graph]]) });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    const ready = await runtime.ensureReady({ cwd }, { projectPath: nested });
+
+    assert.equal(ready, graph);
+    assert.equal(counts.open, 1);
+    assert.equal(counts.init, 0);
+    assert.equal(graph.indexAllCalls, 0);
+    assert.equal(graph.syncCalls, 1);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady rejects a supplied path without an existing index before SDK side effects", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const cwd = path.join(fixture, "a");
+  const target = path.join(fixture, "b", "Z");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(target, { recursive: true });
+  try {
+    const { sdk, counts } = createSdk();
+    const runtime = new CodeGraphRuntime(sdk);
+
+    await assert.rejects(
+      () => runtime.ensureReady({ cwd }, { projectPath: target }),
+      (error: Error) => {
+        assert.match(error.message, /Continue the current task by using read, rg, or find to inspect code under this path/);
+        assert.match(error.message, /Do not retry this path by omitting projectPath/);
+        return true;
+      },
+    );
+
+    assert.equal(counts.open, 0);
+    assert.equal(counts.init, 0);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady never rebuilds an empty index selected by projectPath", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const cwd = path.join(fixture, "a");
+  const root = path.join(fixture, "b");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(root, { recursive: true });
+  try {
+    const graph = new FakeGraph(root, 0, 4);
+    const { sdk, counts } = createSdk({ initializedRoots: [root], graphs: new Map([[root, graph]]) });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    await assert.rejects(() => runtime.ensureReady({ cwd }, { projectPath: root }), /No existing CodeGraph data was found/);
+
+    assert.equal(counts.open, 1);
+    assert.equal(counts.init, 0);
+    assert.equal(graph.indexAllCalls, 0);
+    assert.equal(graph.clearCalls, 0);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady preserves reuse-only authority when an external marker disappears", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const cwd = path.join(fixture, "a");
+  const root = path.join(fixture, "b");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(root, { recursive: true });
+  try {
+    const { sdk, counts } = createSdk({
+      initializedRoots: [root],
+      isInitializedOverride: (_root, call) => call === 1,
+      onOpen: () => { throw new Error("index disappeared"); },
+    });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    await assert.rejects(() => runtime.ensureReady({ cwd }, { projectPath: root }), /index disappeared/);
+
+    assert.equal(counts.init, 0);
+    assert.equal(counts.open, 1);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady resolves relative external projectPath values from ctx.cwd", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const cwd = path.join(fixture, "a");
+  const root = path.join(fixture, "b");
+  const nested = path.join(root, "Z");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(nested, { recursive: true });
+  try {
+    const graph = new FakeGraph(root, 3);
+    const { sdk, counts } = createSdk({ initializedRoots: [root], graphs: new Map([[root, graph]]) });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    assert.equal(await runtime.ensureReady({ cwd }, { projectPath: "../b/Z" }), graph);
+    assert.equal(counts.open, 1);
+    assert.equal(counts.init, 0);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady rejects blank, file, and missing projectPath values before SDK side effects", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const cwd = path.join(fixture, "a");
+  const file = path.join(fixture, "file.ts");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.writeFileSync(file, "export {};\n");
+  try {
+    const { sdk, counts } = createSdk();
+    const runtime = new CodeGraphRuntime(sdk);
+
+    await assert.rejects(() => runtime.ensureReady({ cwd }, { projectPath: " " }), /existing directory/);
+    await assert.rejects(() => runtime.ensureReady({ cwd }, { projectPath: file }), /existing directory/);
+    await assert.rejects(() => runtime.ensureReady({ cwd }, { projectPath: path.join(fixture, "missing") }), /existing directory/);
+    assert.equal(counts.open, 0);
+    assert.equal(counts.init, 0);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady canonicalizes projectPath aliases before caching a selected root", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const cwd = path.join(fixture, "a");
+  const root = path.join(fixture, "b");
+  const alias = path.join(fixture, "alias");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(root, { recursive: true });
+  fs.symlinkSync(root, alias, "dir");
+  try {
+    const graph = new FakeGraph(root, 3);
+    const { sdk, counts } = createSdk({ initializedRoots: [root], graphs: new Map([[root, graph]]) });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    const [first, second] = await Promise.all([
+      runtime.ensureReady({ cwd }, { projectPath: alias }),
+      runtime.ensureReady({ cwd }, { projectPath: root }),
+    ]);
+
+    assert.equal(first, graph);
+    assert.equal(second, graph);
+    assert.equal(counts.open, 1);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady serializes mixed reuse-only and auto-index policies without duplicate graphs", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const root = path.join(fixture, "repo");
+  fs.mkdirSync(root, { recursive: true });
+  try {
+    let releaseOpen!: (graph: FakeGraph) => void;
+    const opened = new Promise<FakeGraph>((resolve) => { releaseOpen = resolve; });
+    const graph = new FakeGraph(root, 0, 2);
+    const { sdk, counts } = createSdk({ initializedRoots: [root], onOpen: () => opened });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    const explicit = runtime.ensureReady({ cwd: root }, { projectPath: root });
+    const omitted = runtime.ensureReady({ cwd: root });
+    releaseOpen(graph);
+
+    await assert.rejects(explicit, /No existing CodeGraph data was found/);
+    assert.equal(await omitted, graph);
+    assert.equal(graph.indexAllCalls, 1);
+    assert.equal(counts.open, 1);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady makes explicit reuse wait for an omitted empty-index build", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const root = path.join(fixture, "repo");
+  fs.mkdirSync(root, { recursive: true });
+  try {
+    let releaseOpen!: (graph: FakeGraph) => void;
+    const opened = new Promise<FakeGraph>((resolve) => { releaseOpen = resolve; });
+    const graph = new FakeGraph(root, 0, 2);
+    const { sdk, counts } = createSdk({ initializedRoots: [root], onOpen: () => opened });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    const omitted = runtime.ensureReady({ cwd: root });
+    const explicit = runtime.ensureReady({ cwd: root }, { projectPath: root });
+    releaseOpen(graph);
+
+    assert.equal(await omitted, graph);
+    assert.equal(await explicit, graph);
+    assert.equal(graph.indexAllCalls, 1);
+    assert.equal(counts.open, 1);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("uninitialize force rejects a queued mixed-policy caller before a second sync", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const root = path.join(fixture, "repo");
+  fs.mkdirSync(root, { recursive: true });
+  try {
+    let releaseSync!: () => void;
+    let syncStarted!: () => void;
+    const started = new Promise<void>((resolve) => { syncStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseSync = resolve; });
+    const graph = new FakeGraph(root, 2);
+    graph.changes = { added: [], modified: ["src/auth.ts"], removed: [] };
+    graph.sync = async () => {
+      graph.syncCalls += 1;
+      syncStarted();
+      await blocked;
+      graph.changes = emptyChanges();
+      return { filesChecked: 1, filesAdded: 0, filesModified: 1, filesRemoved: 0, nodesUpdated: 1, durationMs: 1 };
+    };
+    const { sdk } = createSdk({ initializedRoots: [root], graphs: new Map([[root, graph]]) });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    const explicit = runtime.ensureReady({ cwd: root }, { projectPath: root });
+    await started;
+    const omitted = runtime.ensureReady({ cwd: root });
+    const removed = runtime.uninitialize(root, true, { hasUI: false });
+    releaseSync();
+
+    await assert.rejects(explicit, /being removed/);
+    await assert.rejects(omitted, /being removed/);
+    assert.match(await removed, /Removed CodeGraph index/);
+    assert.equal(graph.syncCalls, 1);
+    assert.equal(graph.uninitializeCalls, 1);
+    assert.equal(runtime.getCachedState(root), undefined);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady uses one canonical state after omitted symlink initialization", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const root = path.join(fixture, "repo");
+  const alias = path.join(fixture, "alias");
+  fs.mkdirSync(root, { recursive: true });
+  fs.symlinkSync(root, alias, "dir");
+  try {
+    const graph = new FakeGraph(root, 0, 2);
+    const { sdk, counts } = createSdk({ onInit: () => graph });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    assert.equal(await runtime.ensureReady({ cwd: alias }), graph);
+    assert.equal(await runtime.ensureReady({ cwd: alias }), graph);
+    assert.equal(await runtime.ensureReady({ cwd: fixture }, { projectPath: root }), graph);
+    assert.equal((await runtime.getStatus(alias)).root, root);
+    assert.equal(counts.init, 1);
+    assert.equal(counts.open, 0);
+    assert.equal(runtime.getCachedState(root)?.root, root);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady preserves corrupt external index errors without initialization", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const cwd = path.join(fixture, "a");
+  const root = path.join(fixture, "b");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(root, { recursive: true });
+  try {
+    const { sdk, counts } = createSdk({ initializedRoots: [root], onOpen: () => { throw new Error("corrupt index"); } });
+    const runtime = new CodeGraphRuntime(sdk);
+
+    await assert.rejects(() => runtime.ensureReady({ cwd }, { projectPath: root }), /corrupt index/);
+    assert.equal(counts.open, 1);
+    assert.equal(counts.init, 0);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("ensureReady aborts before resolving or opening a supplied projectPath", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-codegraph-project-path-"));
+  const cwd = path.join(fixture, "a");
+  const root = path.join(fixture, "b");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(root, { recursive: true });
+  try {
+    const graph = new FakeGraph(root, 3);
+    const { sdk, counts } = createSdk({ initializedRoots: [root], graphs: new Map([[root, graph]]) });
+    const runtime = new CodeGraphRuntime(sdk);
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(() => runtime.ensureReady({ cwd }, { projectPath: root, signal: controller.signal }), /aborted/);
+    assert.equal(counts.open, 0);
+    assert.equal(counts.init, 0);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 test("ensureReady opens parent root and skips index/sync when already clean", async () => {
@@ -423,7 +738,7 @@ test("uninitialize force waits for early init before removing", async () => {
   const graph = new FakeGraph(root, 0, 1);
   release(graph);
 
-  await ready;
+  await assert.rejects(ready, /being removed/);
   const message = await removed;
 
   assert.match(message, /Removed CodeGraph index/);

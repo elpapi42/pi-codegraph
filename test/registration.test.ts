@@ -64,7 +64,7 @@ test("extension shell registers shutdown cleanup, commands, and tools", () => {
   }
 });
 
-test("tool schemas are active-path-only and do not expose projectPath", () => {
+test("tool schemas expose projectPath only on CodeGraph query tools", () => {
   const fake = createFakePi();
   registerTools(fake.pi as never, new CodeGraphRuntime());
   const analyze = fake.tools.find((tool) => tool.name === "analyze_code");
@@ -72,13 +72,12 @@ test("tool schemas are active-path-only and do not expose projectPath", () => {
   assert.equal(containsKey(analyze.parameters, "operation"), false);
   assert.equal(containsKey(analyze.parameters, "depth"), false);
   assert.equal(containsKey(analyze.parameters, "limit"), false);
-  assert.equal(containsKey(analyze.parameters, "projectPath"), false);
 
   for (const tool of fake.tools) {
     assert.equal(
       containsKey(tool.parameters, "projectPath"),
-      false,
-      `${tool.name} schema must not expose projectPath`,
+      true,
+      `${tool.name} schema must expose projectPath`,
     );
   }
 });

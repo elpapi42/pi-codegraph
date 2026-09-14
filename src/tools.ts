@@ -7,9 +7,17 @@ import { runAnalyzeCode } from "./analyze-code.js";
 import { runExploreCode } from "./explore-code.js";
 import { errorResult, textResult, type PiTextToolResult } from "./result.js";
 
+const PROJECT_PATH_DESCRIPTION = "Directory inside the project you want to inspect. Pass it when the target code is outside your active working directory, including another workspace or repository. Absolute paths work directly. Relative paths resolve from your active working directory. The tool uses the nearest existing code index in this directory or its parents. Results can include other files from that indexed project. This parameter does not restrict results to the supplied directory. A supplied path never initializes a missing index. Existing indexes can be synchronized. Null is invalid. Omit it only when your active working directory is the intended project to index or inspect.";
+
+const ProjectPathParam = Type.Optional(Type.Union([
+  Type.String(),
+  Type.Null(),
+], { description: PROJECT_PATH_DESCRIPTION }));
+
 const ExploreCodeParams = Type.Object({
   query: Type.String({ description: "One free-form indexed-code query. Use a behavior question such as \"how does login create and validate sessions\", focused symbols such as \"AuthService loginUser createSession\", or an exact path plus symbols such as \"src/auth/session.ts createSession refreshSession\". These are query patterns, not operation modes or formal syntax. Include paths and symbols when known." }),
   maxFiles: Type.Optional(Type.Number({ description: "Maximum source files to return. Omit it to let CodeGraph choose an adaptive limit, or set 1 through 20." })),
+  projectPath: ProjectPathParam,
 });
 
 function analyzeSelector(description: string) {
@@ -23,6 +31,7 @@ function analyzeSelector(description: string) {
 const AnalyzeCodeParams = Type.Object({
   target: analyzeSelector("Primary symbol to analyze. Symbol alone searches a bounded index. Add file and line from explore_code or candidates for exact file-local selection."),
   related: Type.Optional(analyzeSelector("Optional second symbol. When supplied, analyze_code resolves both selectors first, returns the same graph neighborhood for each, then returns graph paths in both directions. If either selector is not unique, it returns candidates and performs no traversal.")),
+  projectPath: ProjectPathParam,
 }, {
   description: "Analyze one primary symbol, or compare it with one optional related symbol. With target only, returns the target's graph neighborhood without source. With related, resolves both selectors first, returns the same neighborhood for each, then returns graph paths in both directions. If either selector is partial or ambiguous, returns candidates and performs no graph traversal.",
 });
@@ -41,7 +50,7 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
   registerCodeGraphTool(pi, runtime, {
     name: "explore_code",
     label: "Explore Indexed Code",
-    description: "Understand indexed code behavior and retrieve ranked source context in one call. Returns current line-numbered source plus ranked relationships, call paths, and blast-radius leads. The result is not exhaustive and can be noisy in multi-repository or duplicate-code indexes, so verify every returned file path before using it. Include exact project-relative paths and symbols when known. This tool indexes code only. Use read, rg, or find for Markdown, configuration, generated runtime wiring, and exact file inventories.",
+    description: "Understand indexed code behavior and retrieve ranked source context in one call. Returns current line-numbered source plus ranked relationships, call paths, and blast-radius leads. The result is not exhaustive and can be noisy in multi-repository or duplicate-code indexes, so verify every returned file path before using it. Include exact project-relative paths and symbols when known. Pass projectPath when the code is in another directory. This tool indexes code only. Use read, rg, or find for Markdown, configuration, generated runtime wiring, and exact file inventories.",
     promptSnippet: "explore_code: understand indexed code and retrieve ranked source context; use paths and symbols when known, then verify returned paths.",
     promptGuidelines: [
       "Use `explore_code` to understand indexed-code behavior, architecture, bugs, flows, or surrounding source.",
@@ -58,14 +67,14 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
   registerCodeGraphTool(pi, runtime, {
     name: "analyze_code",
     label: "Analyze Code Symbols",
-    description: "Analyze one or two indexed code symbols without choosing a mode. With target only, returns incoming and outgoing relationships, wider impact, and test files in the target's graph neighborhood without source. With related, resolves both selectors first, returns the same neighborhood for each, then returns graph paths in both directions. Pass file and line from explore_code or returned candidates whenever available. When file is set, analyze_code resolves symbols only in that file. If either selector is partial or ambiguous, returns selector-ready candidates and performs no graph traversal. Relationships are static indexed evidence that can omit behavior or contain ambiguous or incorrect resolutions. They are not runtime proof.",
+    description: "Analyze one or two indexed code symbols without choosing a mode. With target only, returns incoming and outgoing relationships, wider impact, and test files in the target's graph neighborhood without source. With related, resolves both selectors first, returns the same neighborhood for each, then returns graph paths in both directions. Pass file and line from explore_code or returned candidates whenever available. When file is set, analyze_code resolves symbols only in that file. Pass projectPath when the code is in another directory. If either selector is partial or ambiguous, returns selector-ready candidates and performs no graph traversal. Relationships are static indexed evidence that can omit behavior or contain ambiguous or incorrect resolutions. They are not runtime proof.",
     promptSnippet: "analyze_code: inspect automatic bounded static neighborhoods for one symbol, or two neighborhoods plus paths between them; ambiguity returns candidates.",
     promptGuidelines: [
       "Use `analyze_code` for bounded static relationships, impact, and graph-neighborhood tests for one known symbol. It does not return source.",
       "Add `related` when you need the same neighborhood for a second symbol and graph paths in both directions between the two symbols.",
       "Pass file and line from explore_code or returned candidates whenever available. When file is set, analyze_code resolves symbols only in that file.",
       "If either selector is partial or ambiguous, select a returned candidate and call again. No graph traversal occurs until both selectors resolve uniquely.",
-      "Use `explore_code` for source and ranked code context. Treat analyze_code paths and relationships as static evidence, not runtime proof.",
+      "Use `explore_code` for source and ranked code context. Pass `projectPath` when the code is in another directory. Treat analyze_code paths and relationships as static evidence, not runtime proof.",
     ],
     parameters: AnalyzeCodeParams,
     run: (cg, params) => runAnalyzeCode(cg, params),
@@ -91,9 +100,21 @@ export function registerCodeGraphTool<TParams extends TSchema>(
     },
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
       try {
-        const cg = await runtime.ensureReady(ctx, { signal });
+        const rawParams = params as Record<string, unknown>;
+        const hasProjectPath = Object.prototype.hasOwnProperty.call(rawParams, "projectPath");
+        const rawProjectPath = rawParams.projectPath;
+        if (hasProjectPath && typeof rawProjectPath !== "string") {
+          throw new Error("projectPath must be a string.");
+        }
+        const projectPath = rawProjectPath as string | undefined;
+        const cg = await runtime.ensureReady(ctx, { signal, projectPath });
+        if (signal?.aborted) throw new Error("CodeGraph operation was aborted.");
         const text = await spec.run(cg, params, signal);
-        return textResult(text, { tool: spec.name, projectRoot: cg.getProjectRoot() }) as never;
+        const projectRoot = cg.getProjectRoot();
+        const output = projectPath === undefined
+          ? text
+          : `Indexed project: ${projectRoot}\nFile paths below are relative to this directory.\n\n${text}`;
+        return textResult(output, { tool: spec.name, projectRoot }) as never;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return errorResult(message, { tool: spec.name }) as never;
@@ -107,13 +128,14 @@ function formatToolCall(toolName: string, args: Record<string, unknown> | undefi
   const params = args ?? {};
 
   if (toolName === "explore_code") {
-    return joinCallParts(title, formatPrimary(params.query, theme), formatOptional("files", params.maxFiles, theme));
+    return joinCallParts(title, formatPrimary(params.query, theme), formatOptional("files", params.maxFiles, theme), formatOptional("project", params.projectPath, theme));
   }
 
   return joinCallParts(
     title,
     formatPrimary((params.target as Record<string, unknown> | undefined)?.symbol, theme, { quote: false }),
     formatOptional("related", (params.related as Record<string, unknown> | undefined)?.symbol, theme),
+    formatOptional("project", params.projectPath, theme),
   );
 }
 

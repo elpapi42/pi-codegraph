@@ -35,7 +35,7 @@ export function formatStatus(report: StatusReport): string {
 
   if (!report.initialized) {
     lines.push("Initialized: no");
-    lines.push("The next CodeGraph tool call will initialize and index this active path.");
+    lines.push("The next CodeGraph tool call without projectPath will initialize and index this active path.");
     appendLastError(lines, report);
     return lines.join("\n");
   }

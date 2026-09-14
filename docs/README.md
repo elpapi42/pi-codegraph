@@ -1,6 +1,6 @@
 # pi-codegraph Extension Documentation
 
-`pi-codegraph` gives Pi fresh local CodeGraph intelligence for the active workspace. Its product contract is simple: prepare a fresh code index for `ctx.cwd`, then expose a small code-navigation surface that distinguishes ranked source exploration from bounded static graph analysis.
+`pi-codegraph` gives Pi fresh local CodeGraph intelligence for the active workspace or an existing indexed external project. Its product contract is simple: prepare a fresh code index for `ctx.cwd` when no selector is supplied, or reuse a selected existing index, then expose a small code-navigation surface that distinguishes ranked source exploration from bounded static graph analysis.
 
 ## Public surface
 
@@ -9,7 +9,7 @@ The extension exposes exactly two tools:
 - `explore_code` for ranked indexed-code context and source.
 - `analyze_code` for bounded static neighborhoods and connections between one or two symbols.
 
-It also exposes `/cg:status` and `/cg:uninit`. It does not expose a project selector, an MCP server, a separate index command, or legacy narrow graph tools.
+It also exposes `/cg:status` and `/cg:uninit`. Both tools accept optional `projectPath` for an existing external index. It does not expose an MCP server, a separate index command, or legacy narrow graph tools.
 
 Use `read`, `rg`, and `find` for known files, Markdown, configuration, generated runtime wiring, and exact inventories. Those tasks are outside a semantic code index.
 
@@ -18,7 +18,7 @@ Use `read`, `rg`, and `find` for known files, Markdown, configuration, generated
 All tools run through `runtime.ensureReady(ctx, { signal })`:
 
 ```text
-tool call
+tool call without projectPath
   -> resolve nearest CodeGraph root from ctx.cwd
   -> initialize at ctx.cwd when absent
   -> index new or empty graph
@@ -26,17 +26,24 @@ tool call
   -> reject unproven freshness
   -> run tool query
   -> return bounded Pi text result
+
+tool call with projectPath
+  -> resolve the supplied existing directory from ctx.cwd
+  -> reuse its nearest existing nonempty CodeGraph root
+  -> sync pending changed files
+  -> otherwise return a path-scoped read/rg/find fallback
+  -> run tool query and identify the selected root
 ```
 
-The runtime caches one CodeGraph instance per resolved root and serializes readiness and sync work for that root. It fails closed after initialization, indexing, cancellation, zero-file, or lock-skipped synchronization failures.
+The runtime caches one CodeGraph instance per resolved physical root and serializes readiness and sync work for that root. A supplied `projectPath` never initializes or rebuilds an index, but can synchronize a nonempty existing index. It fails closed after initialization, indexing, cancellation, zero-file, or lock-skipped synchronization failures.
 
-`/cg:status` is read-only. `/cg:uninit [--force]` removes the resolved `.codegraph/` directory with confirmation or an explicit force flag. Tools provide automatic initialization, indexing, and synchronization, so there is no `/cg:init`.
+`/cg:status` is read-only. `/cg:uninit [--force]` removes the resolved `.codegraph/` directory for the active working directory with confirmation or an explicit force flag. Tool calls without `projectPath` provide automatic initialization, indexing, and synchronization, so there is no `/cg:init`.
 
 ## `explore_code`
 
 `explore_code` runs CodeGraph 1.6 exploration through the installed public CLI package shim. The wrapper keeps active-root binding, automatic readiness, output caps, abort forwarding, and a restricted child environment. It uses `process.execPath`, not a shell. It disables package self-download and removes external MCP tool configuration from the child environment.
 
-The input is one free-form `query`, with an optional `maxFiles` from 1 through 20. Query patterns include:
+The input is one free-form `query`, with an optional `maxFiles` from 1 through 20 and optional `projectPath`. `projectPath` is a directory inside external code to inspect. It selects the nearest existing index in that directory or its parents, not only the supplied subtree. Successful results state the selected index root, and file paths are relative to it. Query patterns include:
 
 ```text
 how does login create and validate sessions
@@ -65,7 +72,7 @@ With only `target`, output contains one selected definition, incoming relationsh
 
 Partial, missing, and ambiguous selectors return up to 20 candidate selectors. No graph traversal occurs until all supplied selectors resolve uniquely. Candidate output ranks definitions ahead of import and file nodes. Relationship rows group repeated edges by node and list distinct edge kinds.
 
-The tool intentionally has no operation, depth, direction, limit, source, or project-path parameter. It gives automatic bounded analysis after exact identity selection. Relationships and paths are static indexed evidence, not runtime proof. They can omit unresolved, generated, dynamic, or unindexed behavior and can include incorrect method resolution.
+The tool intentionally has no operation, depth, direction, limit, or source parameter. It accepts `projectPath` under the same external-index reuse rules as `explore_code`. It gives automatic bounded analysis after exact identity selection. Relationships and paths are static indexed evidence, not runtime proof. They can omit unresolved, generated, dynamic, or unindexed behavior and can include incorrect method resolution.
 
 ## Package boundary
 
@@ -91,7 +98,7 @@ npm audit --audit-level=high
 git diff --check
 ```
 
-Tests cover exact two-tool registration, no public cross-project selector, automatic readiness and command behavior, real-index exploration, target and related graph analysis, file-local selector resolution, candidate-only ambiguity behavior, graph-path direction, output caps, and metadata that does not expose MCP tool names.
+Tests cover exact two-tool registration, `projectPath` selection and reuse-only failures, automatic readiness and command behavior, real-index exploration, target and related graph analysis, file-local selector resolution, candidate-only ambiguity behavior, graph-path direction, output caps, and metadata that does not expose MCP tool names.
 
 ## Operational limits
 
