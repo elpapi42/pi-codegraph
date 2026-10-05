@@ -1,9 +1,9 @@
 import { Type, type Static, type TSchema } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { CodeGraphInstance } from "./codegraph-sdk.js";
 import type { CodeGraphRuntime } from "./runtime.js";
-import { runAnalyzeCode } from "./analyze-code.js";
+import { analyzeOutputSchema, runAnalyzeCodeResult, type AnalyzeOutput } from "./analyze-code.js";
 import { runExploreCode } from "./explore-code.js";
 import { errorResult, textResult, type PiTextToolResult } from "./result.js";
 
@@ -41,9 +41,10 @@ interface CodeGraphToolSpec<TParams extends TSchema> {
   label: string;
   description: string;
   parameters: TParams;
+  outputSchema?: TSchema;
   promptSnippet?: string;
   promptGuidelines?: string[];
-  run: (cg: CodeGraphInstance, params: Static<TParams>, signal: AbortSignal | undefined) => Promise<string> | string;
+  run: (cg: CodeGraphInstance, params: Static<TParams>, signal: AbortSignal | undefined) => Promise<string | { text: string; structuredContent: AnalyzeOutput }> | string | { text: string; structuredContent: AnalyzeOutput };
 }
 
 export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void {
@@ -77,7 +78,8 @@ export function registerTools(pi: ExtensionAPI, runtime: CodeGraphRuntime): void
       "Use `explore_code` for source and ranked code context. Pass `projectPath` when the code is in another directory. Treat analyze_code paths and relationships as static evidence, not runtime proof.",
     ],
     parameters: AnalyzeCodeParams,
-    run: (cg, params) => runAnalyzeCode(cg, params),
+    outputSchema: analyzeOutputSchema,
+    run: (cg, params) => runAnalyzeCodeResult(cg, params),
   });
 }
 
@@ -86,13 +88,14 @@ export function registerCodeGraphTool<TParams extends TSchema>(
   runtime: CodeGraphRuntime,
   spec: CodeGraphToolSpec<TParams>,
 ): void {
-  pi.registerTool({
+  const definition: ToolDefinition<TParams> & { outputSchema?: TSchema } = {
     name: spec.name,
     label: spec.label,
     description: spec.description,
     promptSnippet: spec.promptSnippet,
     promptGuidelines: spec.promptGuidelines,
     parameters: spec.parameters,
+    ...(spec.outputSchema ? { outputSchema: spec.outputSchema } : {}),
     renderCall(args, theme, context) {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       text.setText(formatToolCall(spec.name, args, theme));
@@ -109,18 +112,22 @@ export function registerCodeGraphTool<TParams extends TSchema>(
         const projectPath = rawProjectPath as string | undefined;
         const cg = await runtime.ensureReady(ctx, { signal, projectPath });
         if (signal?.aborted) throw new Error("CodeGraph operation was aborted.");
-        const text = await spec.run(cg, params, signal);
+        const result = await spec.run(cg, params, signal);
+        const text = typeof result === "string" ? result : result.text;
         const projectRoot = cg.getProjectRoot();
         const output = projectPath === undefined
           ? text
           : `Indexed project: ${projectRoot}\nFile paths below are relative to this directory.\n\n${text}`;
-        return textResult(output, { tool: spec.name, projectRoot }) as never;
+        const toolResult = textResult(output, { tool: spec.name, projectRoot });
+        if (typeof result !== "string") toolResult.structuredContent = result.structuredContent;
+        return toolResult as never;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return errorResult(message, { tool: spec.name }) as never;
       }
     },
-  });
+  };
+  pi.registerTool(definition);
 }
 
 function formatToolCall(toolName: string, args: Record<string, unknown> | undefined, theme: ToolCallTheme): string {

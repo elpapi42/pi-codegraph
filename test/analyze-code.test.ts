@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { Value } from "typebox/value";
 import { CodeGraph } from "../src/codegraph-sdk.js";
 import { runAnalyzeCode } from "../src/analyze-code.js";
 import { registerTools } from "../src/tools.js";
@@ -76,11 +77,12 @@ test("analyzes one exact symbol with direct neighbors, residual impact, and test
   assert.doesNotMatch(output, /```/);
 });
 
-test("groups repeated direct relationships by node and preserves distinct edge kinds", () => {
+test("groups repeated direct relationships by node and preserves distinct edge kinds", async () => {
   const login = node({ id: "login" });
   const caller = node({ id: "caller", name: "handleSubmit", filePath: "src/ui.ts", startLine: 20 });
   const callee = node({ id: "callee", name: "createSession", filePath: "src/session.ts", startLine: 3 });
   const relationGraph = {
+    getProjectRoot: () => "/indexed",
     searchNodes: () => [{ node: login, score: 1 }],
     getCallers: () => [
       { node: caller, edge: { kind: "calls" } },
@@ -104,6 +106,11 @@ test("groups repeated direct relationships by node and preserves distinct edge k
   assert.match(output, /loginUser --calls, references→ createSession \(function\) at src\/session\.ts:3/);
   assert.equal((output.match(/handleSubmit \(function\) at src\/ui\.ts:20/g) ?? []).length, 1);
   assert.equal((output.match(/createSession \(function\) at src\/session\.ts:3/g) ?? []).length, 1);
+  const structured = (await structuredAnalysis(relationGraph, { target: { symbol: "loginUser" } })).structuredContent;
+  assert.equal(structured.target.incoming.total, 1);
+  assert.equal(structured.target.outgoing.total, 1);
+  assert.deepEqual(structured.target.incoming.items[0].kinds, ["calls", "references"]);
+  assert.deepEqual(structured.target.outgoing.items[0].kinds, ["calls", "references"]);
 });
 
 test("returns candidates without traversal for partial, missing, and duplicate selectors", () => {
@@ -258,11 +265,12 @@ test("analyzes two symbols with both directed graph paths and normal no-path res
   assert.match(output, /### Related to Target\nNo directed graph path found/);
 });
 
-test("caps graph sections and long graph paths", () => {
+test("caps graph sections and long graph paths", async () => {
   const target = node({ id: "target", name: "target" });
   const callers = Array.from({ length: 21 }, (_, index) => node({ id: `caller-${index}`, name: `caller${index}`, filePath: `src/${index}.ts`, startLine: index + 1 }));
   const longPath = [target, ...Array.from({ length: 21 }, (_, index) => node({ id: `path-${index}`, name: `path${index}`, filePath: `src/path-${index}.ts`, startLine: 1 }))];
   const cappedGraph = {
+    getProjectRoot: () => "/indexed",
     searchNodes: (query: string) => query === "target" ? [{ node: target, score: 1 }] : query === "path20" ? [{ node: longPath.at(-1), score: 1 }] : [],
     getCallers: () => callers.map((item) => ({ node: item, edge: { kind: "calls" } })), getCallees: () => [],
     getImpactRadius: () => ({ nodes: new Map([[target.id, target]]), edges: [] }),
@@ -272,6 +280,13 @@ test("caps graph sections and long graph paths", () => {
   assert.match(output, /## Incoming Relationships \(20 of 21\)/);
   assert.match(output, /Truncated after 20 entries/);
   assert.match(output, /Path truncated after 20 of 21 edges/);
+  const structured = (await structuredAnalysis(cappedGraph, { target: { symbol: "target" }, related: { symbol: "path20" } })).structuredContent;
+  assert.equal(structured.target.incoming.total, 21);
+  assert.equal(structured.target.incoming.items.length, 20);
+  assert.equal(structured.paths.targetToRelated.total, 21);
+  assert.equal(structured.paths.targetToRelated.steps.length, 21);
+  assert.equal(structured.paths.targetToRelated.steps[20].symbol.name, "path19");
+  assert.equal(structured.paths.relatedToTarget, null);
 });
 
 test("runs real indexed one- and two-target analysis through public registration", async () => {
@@ -282,6 +297,12 @@ test("runs real indexed one- and two-target analysis through public registration
     const single = await tool.execute("call", { target: { symbol: "loginUser", file: "src/auth.ts", line: 2 }, projectPath: path.join(fixture.root, "src") }, new AbortController().signal, undefined, { cwd: activeCwd });
     const singleText = single.content[0]?.text ?? "";
     assert.equal(single.isError, undefined, singleText);
+    assert.ok(Value.Check(tool.outputSchema, single.structuredContent));
+    assert.deepEqual(JSON.parse(JSON.stringify(single.structuredContent)), single.structuredContent);
+    assert.equal(single.structuredContent.projectRoot, fixture.root);
+    assert.equal(single.structuredContent.target.symbol.file, "src/auth.ts");
+    assert.equal(single.structuredContent.target.symbol.line, 2);
+    assert.equal(single.structuredContent.status, "analyzed");
     assert.match(singleText, new RegExp(`^Indexed project: ${fixture.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.match(singleText, /src\/auth\.ts/);
     assert.match(singleText, /handleSubmit/);
@@ -295,6 +316,11 @@ test("runs real indexed one- and two-target analysis through public registration
     }, new AbortController().signal, undefined, { cwd: fixture.root });
     const pairText = pair.content[0]?.text ?? "";
     assert.equal(pair.isError, undefined);
+    assert.ok(Value.Check(tool.outputSchema, pair.structuredContent));
+    assert.deepEqual(JSON.parse(JSON.stringify(pair.structuredContent)), pair.structuredContent);
+    assert.equal(pair.structuredContent.projectRoot, fixture.root);
+    assert.equal(pair.structuredContent.related.symbol.name, "loginUser");
+    assert.equal(pair.structuredContent.paths.targetToRelated.steps[1].kind, "calls");
     assert.match(pairText, /Target to Related/);
     assert.match(pairText, /handleSubmit/);
     assert.match(pairText, /--calls→ loginUser/);
@@ -302,4 +328,240 @@ test("runs real indexed one- and two-target analysis through public registration
     fixture.cleanup();
     fs.rmSync(activeCwd, { recursive: true, force: true });
   }
+});
+
+function goldenGraph() {
+  const a = node({ id: "a", name: "a", qualifiedName: "Service::a", signature: "a(): void", filePath: "src/a.ts", startLine: 1 });
+  const b = node({ id: "b", name: "b", qualifiedName: "b", signature: "", filePath: "src/b.ts", startLine: 2 });
+  return {
+    getProjectRoot: () => "/indexed",
+    searchNodes: (query: string) => (query === "partial" ? [a, b] : query === "missing" ? [] : [a, b].filter(item => item.name === query)).map(node => ({ node, score: 1 })),
+    getCallers: (id: string) => id === "a" ? [{ node: b, edge: { kind: "calls" } }] : [],
+    getCallees: (id: string) => id === "b" ? [{ node: a, edge: { kind: "calls" } }] : [],
+    getImpactRadius: () => ({ nodes: new Map([[a.id, a], [b.id, b]]), edges: [] }),
+    findPath: (from: string, to: string) => from === "a" ? [{ node: a, edge: null }, { node: b, edge: null }] : [{ node: b, edge: null }, { node: a, edge: { kind: "calls" } }],
+  };
+}
+
+test("keeps exact Markdown for resolved, related, candidate, and missing results", () => {
+  const cases = [
+    { target: { symbol: "a" } },
+    { target: { symbol: "a" }, related: { symbol: "b" } },
+    { target: { symbol: "partial" } },
+    { target: { symbol: "missing" } },
+  ];
+  const expected = [
+    `## Code Analysis
+
+## Target: a (function)
+src/a.ts:1
+Qualified: Service::a
+Signature: \`a(): void\`
+## Incoming Relationships (1 of 1)
+- b (function) at src/b.ts:2 --calls→ a
+## Outgoing Relationships (0 of 0)
+## Wider Impact (0 of 0)
+## Test Files Found in This Graph Neighborhood (0)
+No test files found in this graph neighborhood.
+
+Target selection uses exact matching within a bounded candidate search. Static graph relationships can omit unresolved, generated, dynamic, or runtime behavior and can contain ambiguous or incorrect resolutions. They are not runtime proof.`,
+    `## Code Analysis
+
+## Target: a (function)
+src/a.ts:1
+Qualified: Service::a
+Signature: \`a(): void\`
+## Incoming Relationships (1 of 1)
+- b (function) at src/b.ts:2 --calls→ a
+## Outgoing Relationships (0 of 0)
+## Wider Impact (0 of 0)
+## Test Files Found in This Graph Neighborhood (0)
+No test files found in this graph neighborhood.
+
+## Related: b (function)
+src/b.ts:2
+## Incoming Relationships (0 of 0)
+## Outgoing Relationships (1 of 1)
+- b --calls→ a (function) at src/a.ts:1
+## Wider Impact (0 of 0)
+## Test Files Found in This Graph Neighborhood (0)
+No test files found in this graph neighborhood.
+
+## Graph Paths
+### Target to Related (1 edges)
+- a (function) at src/a.ts:1
+  --references→ b (function) at src/b.ts:2
+
+### Related to Target (1 edges)
+- b (function) at src/b.ts:2
+  --calls→ a (function) at src/a.ts:1
+
+Target selection uses exact matching within a bounded candidate search. Static graph relationships can omit unresolved, generated, dynamic, or runtime behavior and can contain ambiguous or incorrect resolutions. They are not runtime proof.`,
+    `## Code Analysis
+
+No exact definition matches "partial". Select a likely candidate before analysis.
+
+## Candidates (2 of 2)
+
+- Definition: a (function)
+   Selector: { "symbol": "a", "file": "src/a.ts", "line": 1 }
+   Qualified: Service::a
+   Signature: \`a(): void\`
+- Definition: b (function)
+   Selector: { "symbol": "b", "file": "src/b.ts", "line": 2 }`,
+    `## Code Analysis
+
+No exact definition matches "missing". Select a likely candidate before analysis.
+
+No likely code-symbol candidates found.`
+  ];
+  cases.forEach((params,index) => assert.equal(runAnalyzeCode(goldenGraph() as never,params), expected[index]));
+});
+
+async function structuredAnalysis(cg: unknown, params: Record<string, unknown>) {
+  const tools: any[] = [];
+  registerTools({ registerTool(tool: unknown) { tools.push(tool); } } as never, {
+    ensureReady: async () => cg,
+  } as never);
+  const tool = tools.find(item => item.name === "analyze_code");
+  const result = await tool.execute("call", params, undefined, undefined, { cwd: "/active" });
+  assert.equal(result.isError, undefined, result.content[0]?.text);
+  assert.ok(tool.outputSchema);
+  assert.ok(Value.Check(tool.outputSchema, result.structuredContent));
+  assert.deepEqual(JSON.parse(JSON.stringify(result.structuredContent)), result.structuredContent);
+  return result;
+}
+
+test("registered analysis exposes schema-valid target data without changing text or details", async () => {
+  const cg = goldenGraph();
+  const result = await structuredAnalysis(cg, { target: { symbol: "a" } });
+  const text = runAnalyzeCode(cg as never, { target: { symbol: "a" } });
+  assert.deepEqual(result.content, [{ type: "text", text }]);
+  assert.deepEqual(result.details, { tool: "analyze_code", projectRoot: "/indexed", value: text, truncated: false });
+  assert.equal(result.structuredContent.projectRoot, "/indexed");
+  assert.equal(result.structuredContent.status, "analyzed");
+  assert.deepEqual(result.structuredContent.target.symbol, {
+    name: "a", kind: "function", file: "src/a.ts", line: 1, qualifiedName: "Service::a", signature: "a(): void",
+  });
+  assert.deepEqual(result.structuredContent.target.incoming, {
+    items: [{ symbol: { name: "b", kind: "function", file: "src/b.ts", line: 2 }, kinds: ["calls"] }], total: 1,
+  });
+  assert.deepEqual(result.structuredContent.target.outgoing, { items: [], total: 0 });
+  assert.deepEqual(result.structuredContent.target.impact, { items: [], total: 0 });
+  assert.deepEqual(result.structuredContent.target.testFiles, []);
+  assert.equal(Object.hasOwn(result.structuredContent, "related"), false);
+  assert.equal(Object.hasOwn(result.structuredContent, "paths"), false);
+});
+
+test("registered candidate results expose reasons and reusable selectors without traversal", async () => {
+  const first = node({ id: "one", name: "execute", qualifiedName: "Service::execute", filePath: "src/a.ts", startLine: 2 });
+  const second = node({ id: "two", name: "execute", qualifiedName: "Other::execute", filePath: "src/b.ts", startLine: 3 });
+  const cg = {
+    getProjectRoot: () => "/indexed",
+    searchNodes: (query: string) => (query === "missing" ? [] : [second, first]).map(node => ({ node, score: 1 })),
+    getNodesInFile: () => [second, first],
+    getCallers: () => { throw new Error("candidates must not traverse"); },
+    getCallees: () => { throw new Error("candidates must not traverse"); },
+    getImpactRadius: () => { throw new Error("candidates must not traverse"); },
+    findPath: () => { throw new Error("candidates must not traverse"); },
+  };
+  for (const [selector, reason, total] of [
+    [{ symbol: "execute" }, "ambiguous", 2],
+    [{ symbol: "execute", line: 99 }, "not_found", 2],
+    [{ symbol: "execute", file: "src/a.ts", line: 99 }, "not_found", 2],
+    [{ symbol: "partial" }, "not_found", 2],
+    [{ symbol: "missing" }, "not_found", 0],
+  ] as const) {
+    const result = await structuredAnalysis(cg, { target: selector });
+    assert.equal(result.content[0].text, runAnalyzeCode(cg as never, { target: selector }));
+    assert.equal(result.structuredContent.status, "candidates");
+    assert.equal(result.structuredContent.selector, "target");
+    assert.equal(result.structuredContent.reason, reason);
+    assert.equal(result.structuredContent.total, total);
+    assert.equal(Object.hasOwn(result.structuredContent, "title"), false);
+    assert.equal(Object.hasOwn(result.structuredContent, "target"), false);
+    if (total) assert.deepEqual(result.structuredContent.candidates[0].selector, { symbol: "execute", file: "src/a.ts", line: 2 });
+  }
+  const result = await structuredAnalysis(cg, { target: { symbol: "execute", line: 2 }, related: { symbol: "execute" } });
+  assert.equal(result.structuredContent.selector, "related");
+  assert.equal(result.structuredContent.reason, "ambiguous");
+});
+
+test("registered paired analysis returns both path directions, missing paths, and zero-edge paths", async () => {
+  const cg = goldenGraph();
+  const result = await structuredAnalysis(cg, { target: { symbol: "a" }, related: { symbol: "b" } });
+  const output = result.structuredContent;
+  assert.equal(output.related.symbol.name, "b");
+  assert.deepEqual(output.paths.targetToRelated, {
+    steps: [{ symbol: output.target.symbol }, { symbol: output.related.symbol, kind: "references" }], total: 1,
+  });
+  assert.deepEqual(output.paths.relatedToTarget, {
+    steps: [{ symbol: output.related.symbol }, { symbol: output.target.symbol, kind: "calls" }], total: 1,
+  });
+  assert.equal(result.content[0].text, runAnalyzeCode(cg as never, { target: { symbol: "a" }, related: { symbol: "b" } }));
+  const missing = await structuredAnalysis({ ...cg, findPath: () => null }, { target: { symbol: "a" }, related: { symbol: "b" } });
+  assert.deepEqual(missing.structuredContent.paths, { targetToRelated: null, relatedToTarget: null });
+  const a = node({ id: "a", name: "a", qualifiedName: "a" });
+  const zero = await structuredAnalysis({ ...cg, findPath: () => [{ node: a, edge: null }] }, { target: { symbol: "a" }, related: { symbol: "a" } });
+  assert.equal(zero.structuredContent.paths.targetToRelated.total, 0);
+  assert.equal(zero.structuredContent.paths.targetToRelated.steps.length, 1);
+  assert.equal(Object.hasOwn(zero.structuredContent.paths.targetToRelated.steps[0], "kind"), false);
+});
+
+
+test("candidate totals retain resolver size and definition priority beyond the cap", async () => {
+  const definitions = Array.from({ length: 21 }, (_, index) => node({
+    id: `definition-${index}`, name: "execute", filePath: `src/${String(index).padStart(2, "0")}.ts`, startLine: index + 1,
+  }));
+  const cg = {
+    getProjectRoot: () => "/indexed",
+    searchNodes: () => [node({ id: "file", name: "execute", kind: "file", filePath: "src/0.ts" }),
+      node({ id: "import", name: "execute", kind: "import", filePath: "src/0.ts" }), ...definitions].map(node => ({ node, score: 1 })),
+    getCallers: () => { throw new Error("candidates must not traverse"); },
+  };
+  const output = (await structuredAnalysis(cg, { target: { symbol: "execute" } })).structuredContent;
+  assert.equal(output.reason, "ambiguous");
+  assert.equal(output.total, 23);
+  assert.equal(output.candidates.length, 20);
+  assert.ok(output.candidates.every((candidate: { kind: string }) => candidate.kind === "function"));
+  assert.equal(output.candidates[19].selector.file, "src/19.ts");
+});
+
+test("neighborhood totals and test discovery precede structured section caps", async () => {
+  const target = node({ id: "target", name: "target" });
+  const callers = Array.from({ length: 21 }, (_, index) => node({
+    id: `caller-${index}`, filePath: `src/a${index}.ts`, name: `caller${index}`,
+  }));
+  callers.push(node({ id: "last-caller", filePath: "test/z-caller.test.ts", name: "lastCaller" }));
+  const residual = Array.from({ length: 21 }, (_, index) => node({ id: `impact-${index}`, filePath: `src/b${index}.ts` }));
+  residual.push(node({ id: "last-impact", filePath: "test/z-impact.test.ts" }));
+  const cg = {
+    getProjectRoot: () => "/indexed", searchNodes: () => [{ node: target }],
+    getCallers: () => callers.map(node => ({ node })), getCallees: () => callers.map(node => ({ node })),
+    getImpactRadius: () => ({ nodes: new Map([target, ...callers, ...residual].map(node => [node.id, node])) }),
+  };
+  const output = (await structuredAnalysis(cg, { target: { symbol: "target" } })).structuredContent;
+  for (const section of [output.target.incoming, output.target.outgoing, output.target.impact]) {
+    assert.equal(section.total, 22);
+    assert.equal(section.items.length, 20);
+  }
+  assert.deepEqual(output.target.testFiles, ["test/z-caller.test.ts", "test/z-impact.test.ts"]);
+  assert.equal(output.target.incoming.items.some((item: any) => item.symbol.file.startsWith("test/")), false);
+  assert.equal(output.target.impact.items.some((item: any) => item.file.startsWith("test/")), false);
+});
+
+test("structured signatures stay complete when model text reaches its 50 Ki-character cap", async () => {
+  const signature = "x".repeat(60 * 1024);
+  const cg = { ...goldenGraph(), searchNodes: () => [{ node: node({ signature }) }] };
+  const result = await structuredAnalysis(cg, { target: { symbol: "loginUser" }, projectPath: "/indexed/src" });
+  assert.equal(result.details.truncated, true);
+  assert.match(result.content[0].text, /^Indexed project: \/indexed/);
+  assert.match(result.content[0].text, /output truncated/);
+  assert.equal(result.structuredContent.target.symbol.signature, signature);
+});
+
+test("candidate target does not suppress related-selector validation", () => {
+  assert.throws(() => runAnalyzeCode(goldenGraph() as never, {
+    target: { symbol: "missing" }, related: { symbol: "b", line: -1 },
+  }), /related.line must be a positive integer/);
 });

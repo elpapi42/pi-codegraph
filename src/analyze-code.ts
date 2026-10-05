@@ -1,3 +1,4 @@
+import { Type, type Static } from "@earendil-works/pi-ai";
 import type { CodeGraphInstance, Edge, Node } from "./codegraph-sdk.js";
 import { lastQualifierPart, matchesSymbol } from "./symbols.js";
 
@@ -16,33 +17,142 @@ export interface AnalyzeCodeParams {
   related?: SymbolSelector;
 }
 
+const symbolSchema = Type.Object({
+  name: Type.String(), kind: Type.String(),
+  file: Type.String({ description: "Relative to projectRoot" }), line: Type.Integer(),
+  qualifiedName: Type.Optional(Type.String()), signature: Type.Optional(Type.String()),
+});
+const relationSchema = Type.Object({ symbol: symbolSchema, kinds: Type.Array(Type.String()) });
+const relationSectionSchema = Type.Object({ items: Type.Array(relationSchema), total: Type.Integer() });
+const neighborhoodSchema = Type.Object({
+  symbol: symbolSchema,
+  incoming: relationSectionSchema, outgoing: relationSectionSchema,
+  impact: Type.Object({ items: Type.Array(symbolSchema), total: Type.Integer() }),
+  testFiles: Type.Array(Type.String()),
+});
+const pathSchema = Type.Object({
+  steps: Type.Array(Type.Object({ symbol: symbolSchema, kind: Type.Optional(Type.String()) })),
+  total: Type.Integer({ description: "Edge count before the 20-edge cap" }),
+});
+export const analyzeOutputSchema = Type.Union([
+  Type.Object({
+    projectRoot: Type.String(), status: Type.Literal("candidates"),
+    selector: Type.Union([Type.Literal("target"), Type.Literal("related")], { description: "Selector needing refinement" }),
+    reason: Type.Union([Type.Literal("ambiguous"), Type.Literal("not_found")]),
+    candidates: Type.Array(Type.Object({
+      ...symbolSchema.properties,
+      selector: Type.Object({ symbol: Type.String(), file: Type.String(), line: Type.Integer() }, { description: "Reusable selector" }),
+    })),
+    total: Type.Integer({ description: "Candidates found by the bounded resolver" }),
+  }),
+  Type.Object({
+    projectRoot: Type.String(), status: Type.Literal("analyzed"), target: neighborhoodSchema,
+    related: Type.Optional(neighborhoodSchema),
+    paths: Type.Optional(Type.Object({
+      targetToRelated: Type.Union([pathSchema, Type.Null()]),
+      relatedToTarget: Type.Union([pathSchema, Type.Null()]),
+    })),
+  }),
+]);
+export type AnalyzeOutput = Static<typeof analyzeOutputSchema>;
+
 type RelatedNode = { node: Node; edge?: Edge };
 type RelatedGroup = { node: Node; edgeKinds: string[] };
 type CodeGraphWithNodesInFile = CodeGraphInstance & { getNodesInFile(filePath: string): Node[] };
 type Resolution =
   | { kind: "resolved"; node: Node }
-  | { kind: "candidates"; title: string; nodes: Node[] };
+  | { kind: "candidates"; reason: "ambiguous" | "not_found"; title: string; nodes: Node[] };
 
-export function runAnalyzeCode(cg: CodeGraphInstance, params: AnalyzeCodeParams): string {
+interface Neighborhood {
+  node: Node;
+  callers: RelatedGroup[];
+  callees: RelatedGroup[];
+  residual: Node[];
+  testFiles: string[];
+}
+type GraphPath = Array<{ node: Node; edge: Edge | null }> | null;
+type Analysis =
+  | { kind: "candidates"; result: Extract<Resolution, { kind: "candidates" }>; selector: "target" | "related" }
+  | { kind: "analyzed"; target: Neighborhood; related?: Neighborhood; paths?: { targetToRelated: GraphPath; relatedToTarget: GraphPath } };
+
+function buildAnalysis(cg: CodeGraphInstance, params: AnalyzeCodeParams): Analysis {
   const target = resolveSelector(cg, params.target, "target");
   const related = params.related === undefined ? undefined : resolveSelector(cg, params.related, "related");
+  if (target.kind === "candidates") return { kind: "candidates", result: target, selector: "target" };
+  if (related?.kind === "candidates") return { kind: "candidates", result: related, selector: "related" };
 
-  if (target.kind === "candidates") return formatCandidates(target);
-  if (related?.kind === "candidates") return formatCandidates(related);
+  const targetNeighborhood = buildNeighborhood(cg, target.node);
+  if (!related) return { kind: "analyzed", target: targetNeighborhood };
+  return {
+    kind: "analyzed", target: targetNeighborhood, related: buildNeighborhood(cg, related.node),
+    paths: { targetToRelated: cg.findPath(target.node.id, related.node.id), relatedToTarget: cg.findPath(related.node.id, target.node.id) },
+  };
+}
 
-  const targetOutput = formatNeighborhood(cg, target.node, "Target");
-  if (!related) return ["## Code Analysis", "", targetOutput, caveat()].join("\n");
-
+function formatAnalysis(analysis: Analysis): string {
+  if (analysis.kind === "candidates") return formatCandidates(analysis.result);
+  const targetOutput = formatNeighborhood(analysis.target, "Target");
+  if (!analysis.related) return ["## Code Analysis", "", targetOutput, caveat()].join("\n");
   return [
-    "## Code Analysis",
-    "",
-    targetOutput,
-    "",
-    formatNeighborhood(cg, related.node, "Related"),
-    "",
-    formatPaths(cg, target.node, related.node),
-    caveat(),
+    "## Code Analysis", "", targetOutput, "", formatNeighborhood(analysis.related, "Related"), "",
+    formatPaths(analysis.paths!, analysis.target.node, analysis.related.node), caveat(),
   ].join("\n");
+}
+
+export function runAnalyzeCode(cg: CodeGraphInstance, params: AnalyzeCodeParams): string {
+  return formatAnalysis(buildAnalysis(cg, params));
+}
+
+export function runAnalyzeCodeResult(cg: CodeGraphInstance, params: AnalyzeCodeParams): { text: string; structuredContent: AnalyzeOutput } {
+  const analysis = buildAnalysis(cg, params);
+  const text = formatAnalysis(analysis);
+  if (analysis.kind === "candidates") {
+    return { text, structuredContent: {
+      projectRoot: cg.getProjectRoot(), status: "candidates", selector: analysis.selector, reason: analysis.result.reason,
+      candidates: sortCandidates(analysis.result.nodes).slice(0, sectionLimit).map(node => ({
+        ...projectSymbol(node), selector: { symbol: node.name, file: node.filePath, line: node.startLine },
+      })),
+      total: analysis.result.nodes.length,
+    } };
+  }
+  return { text, structuredContent: {
+    projectRoot: cg.getProjectRoot(), status: "analyzed", target: projectNeighborhood(analysis.target),
+    ...(analysis.related ? { related: projectNeighborhood(analysis.related) } : {}),
+    ...(analysis.paths ? { paths: {
+      targetToRelated: projectPath(analysis.paths.targetToRelated),
+      relatedToTarget: projectPath(analysis.paths.relatedToTarget),
+    } } : {}),
+  } };
+}
+
+function projectPath(path: GraphPath): Static<typeof pathSchema> | null {
+  if (!path) return null;
+  return {
+    steps: path.slice(0, pathEdgeLimit + 1).map((step, index) => ({
+      symbol: projectSymbol(step.node), ...(index > 0 ? { kind: step.edge?.kind ?? "references" } : {}),
+    })),
+    total: path.length - 1,
+  };
+}
+
+function projectSymbol(node: Node): Static<typeof symbolSchema> {
+  return {
+    name: node.name, kind: node.kind, file: node.filePath, line: node.startLine,
+    ...(node.qualifiedName && node.qualifiedName !== node.name ? { qualifiedName: node.qualifiedName } : {}),
+    ...(node.signature ? { signature: node.signature } : {}),
+  };
+}
+
+function projectNeighborhood(neighborhood: Neighborhood): Static<typeof neighborhoodSchema> {
+  const relations = (groups: RelatedGroup[]) => ({
+    items: groups.slice(0, sectionLimit).map(item => ({ symbol: projectSymbol(item.node), kinds: item.edgeKinds })),
+    total: groups.length,
+  });
+  return {
+    symbol: projectSymbol(neighborhood.node), incoming: relations(neighborhood.callers), outgoing: relations(neighborhood.callees),
+    impact: { items: neighborhood.residual.slice(0, sectionLimit).map(projectSymbol), total: neighborhood.residual.length },
+    testFiles: neighborhood.testFiles,
+  };
 }
 
 function resolveSelector(cg: CodeGraphInstance, selector: SymbolSelector, label: string): Resolution {
@@ -60,13 +170,14 @@ function resolveSelector(cg: CodeGraphInstance, selector: SymbolSelector, label:
   const selected = exact.filter((node) => line === undefined || node.startLine === line);
 
   if (selected.length === 1) return { kind: "resolved", node: selected[0]! };
-  if (selected.length > 1) return { kind: "candidates", title: `Multiple exact definitions match ${JSON.stringify(symbol)}. Refine ${label} with file and line.`, nodes: selected };
+  if (selected.length > 1) return { kind: "candidates", reason: "ambiguous", title: `Multiple exact definitions match ${JSON.stringify(symbol)}. Refine ${label} with file and line.`, nodes: selected };
   if (exact.length > 0 && line !== undefined) {
-    return { kind: "candidates", title: `No exact definition of ${JSON.stringify(symbol)} matches the supplied selector.`, nodes: exact };
+    return { kind: "candidates", reason: "not_found", title: `No exact definition of ${JSON.stringify(symbol)} matches the supplied selector.`, nodes: exact };
   }
 
   return {
     kind: "candidates",
+    reason: "not_found",
     title: exact.length === 0
       ? `No exact definition matches ${JSON.stringify(symbol)}. Select a likely candidate before analysis.`
       : `No definition matches ${JSON.stringify(symbol)}.`,
@@ -80,11 +191,12 @@ function resolveFileSelector(cg: CodeGraphInstance, symbol: string, file: string
   const selected = exact.filter((node) => line === undefined || node.startLine === line);
 
   if (selected.length === 1) return { kind: "resolved", node: selected[0]! };
-  if (selected.length > 1) return { kind: "candidates", title: `Multiple exact definitions match ${JSON.stringify(symbol)} in ${JSON.stringify(file)}. Refine ${label} with line.`, nodes: selected };
-  if (exact.length > 0) return { kind: "candidates", title: `No exact definition of ${JSON.stringify(symbol)} matches the supplied selector.`, nodes: exact };
+  if (selected.length > 1) return { kind: "candidates", reason: "ambiguous", title: `Multiple exact definitions match ${JSON.stringify(symbol)} in ${JSON.stringify(file)}. Refine ${label} with line.`, nodes: selected };
+  if (exact.length > 0) return { kind: "candidates", reason: "not_found", title: `No exact definition of ${JSON.stringify(symbol)} matches the supplied selector.`, nodes: exact };
 
   return {
     kind: "candidates",
+    reason: "not_found",
     title: `No exact definition matches ${JSON.stringify(symbol)} in ${JSON.stringify(file)}. Select a likely candidate before analysis.`,
     nodes: fileNodes.filter((node) => node.name.toLowerCase().includes(symbol.toLowerCase())),
   };
@@ -101,14 +213,18 @@ function formatCandidates(result: Extract<Resolution, { kind: "candidates" }>): 
   return lines.join("\n");
 }
 
-function formatNeighborhood(cg: CodeGraphInstance, node: Node, label: string): string {
+function buildNeighborhood(cg: CodeGraphInstance, node: Node): Neighborhood {
   const callers = groupRelations(cg.getCallers(node.id) as RelatedNode[]);
   const callees = groupRelations(cg.getCallees(node.id) as RelatedNode[]);
   const directIds = new Set([node.id, ...callers.map((item) => item.node.id), ...callees.map((item) => item.node.id)]);
   const impact = cg.getImpactRadius(node.id, impactDepth);
   const residual = sortNodes([...impact.nodes.values()].filter((item) => !directIds.has(item.id)));
   const testFiles = uniqueTestFiles([...callers.map((item) => item.node), ...residual]);
+  return { node, callers, callees, residual, testFiles };
+}
 
+function formatNeighborhood(neighborhood: Neighborhood, label: string): string {
+  const { node, callers, callees, residual, testFiles } = neighborhood;
   return [
     `## ${label}: ${node.name} (${node.kind})`,
     `${node.filePath}:${node.startLine}`,
@@ -152,12 +268,12 @@ function formatTestFiles(files: string[]): string {
   return [`## Test Files Found in This Graph Neighborhood (${files.length})`, ...files.map((file) => `- ${file}`)].join("\n");
 }
 
-function formatPaths(cg: CodeGraphInstance, from: Node, to: Node): string {
+function formatPaths(paths: { targetToRelated: GraphPath; relatedToTarget: GraphPath }, from: Node, to: Node): string {
   return [
     "## Graph Paths",
-    formatPath("Target to Related", cg.findPath(from.id, to.id), from, to),
+    formatPath("Target to Related", paths.targetToRelated, from, to),
     "",
-    formatPath("Related to Target", cg.findPath(to.id, from.id), to, from),
+    formatPath("Related to Target", paths.relatedToTarget, to, from),
   ].join("\n");
 }
 

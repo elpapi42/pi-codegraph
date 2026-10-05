@@ -1,9 +1,12 @@
+import type { AnalyzeOutput } from "./analyze-code.js";
+
 export const MAX_OUTPUT_LENGTH = 50 * 1024;
 const TRUNCATION_MARKER = "\n\n... (output truncated)";
 
 export interface PiTextToolResult {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
+  structuredContent?: AnalyzeOutput;
   details?: Record<string, unknown> & {
     tool?: string;
     projectRoot?: string;

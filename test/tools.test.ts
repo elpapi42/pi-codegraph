@@ -16,6 +16,7 @@ interface RegisteredTool {
   promptSnippet?: string;
   promptGuidelines?: string[];
   parameters?: unknown;
+  outputSchema?: unknown;
   renderCall?: (args: Record<string, unknown>, theme: FakeTheme, context: { lastComponent?: unknown }) => { render(width: number): string[] };
   execute: (
     toolCallId: string,
@@ -23,7 +24,7 @@ interface RegisteredTool {
     signal: AbortSignal,
     onUpdate: ((update: unknown) => void) | undefined,
     ctx: { cwd: string },
-  ) => Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean; details?: Record<string, unknown> }>;
+  ) => Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean; details?: Record<string, unknown>; structuredContent?: unknown }>;
 }
 
 interface FakeTheme {
@@ -96,6 +97,8 @@ test("explore_code returns upstream source, relationships, and blast radius from
     const result = await executeTool(getTool(fake.tools, "explore_code"), { query: "how does login work", maxFiles: 4 }, fixture.root);
     const text = result.content[0]?.text ?? "";
     assert.equal(result.isError, undefined);
+    assert.equal(Object.hasOwn(result, "structuredContent"), false);
+    assert.equal(Object.hasOwn(getTool(fake.tools, "explore_code"), "outputSchema"), false);
     assert.doesNotMatch(text, /^Indexed project:/);
     assert.match(text, /loginUser/);
     assert.match(text, /createSession/);
@@ -119,6 +122,8 @@ test("explore_code uses projectPath to query an external indexed project", async
     const text = result.content[0]?.text ?? "";
 
     assert.equal(result.isError, undefined);
+    assert.equal(Object.hasOwn(result, "structuredContent"), false);
+    assert.equal(Object.hasOwn(getTool(fake.tools, "explore_code"), "outputSchema"), false);
     assert.match(text, new RegExp(`^Indexed project: ${fixture.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.match(text, /File paths below are relative to this directory/);
     assert.match(text, /loginUser/);
@@ -227,6 +232,7 @@ test("shared registration rejects an explicitly present non-string projectPath",
   const result = await executeTool(getTool(fake.tools, "test_tool"), { query: "value", projectPath: null }, "/active/project");
 
   assert.equal(result.isError, true);
+  assert.equal(Object.hasOwn(result, "structuredContent"), false);
   assert.match(result.content[0]?.text ?? "", /projectPath must be a string/);
   assert.equal(ensureReadyCalls, 0);
 });
@@ -249,6 +255,7 @@ test("package validation keeps explicit null projectPath out of omission mode", 
   assert.equal(params.projectPath, "");
   const result = await executeTool(tool, params, "/active/project");
   assert.equal(result.isError, true);
+  assert.equal(Object.hasOwn(result, "structuredContent"), false);
   assert.match(result.content[0]?.text ?? "", /projectPath must be an existing directory/);
   assert.equal(receivedProjectPath, "");
 });
@@ -280,6 +287,7 @@ test("installed Pi validation preserves explicit null projectPath for registered
   assert.equal(params.projectPath, null);
   const result = await executeTool(tool, params, "/active/project");
   assert.equal(result.isError, true);
+  assert.equal(Object.hasOwn(result, "structuredContent"), false);
   assert.match(result.content[0]?.text ?? "", /projectPath must be a string/);
   assert.equal(ensureReadyCalls, 0);
 });
@@ -321,4 +329,19 @@ test("registered metadata exposes only retained Pi tool names", () => {
   registerTools(fake.pi as never, new CodeGraphRuntime());
   assert.deepEqual(fake.tools.map((tool) => tool.name).sort(), ["analyze_code", "explore_code"]);
   assert.doesNotMatch(JSON.stringify(fake.tools), /codegraph_/i);
+});
+
+
+test("analyze_code errors keep text error behavior without structured output", async () => {
+  const fake = createFakePi();
+  registerTools(fake.pi as never, { ensureReady: async () => { throw new Error("No existing CodeGraph data"); } } as never);
+  const tool = getTool(fake.tools, "analyze_code");
+  assert.ok(tool.outputSchema);
+  const result = await executeTool(tool, { target: { symbol: "target" }, projectPath: "/missing" }, "/active");
+  assert.equal(result.isError, true);
+  assert.equal(Object.hasOwn(result, "structuredContent"), false);
+  assert.deepEqual(result.content, [{ type: "text", text: "CodeGraph error: No existing CodeGraph data" }]);
+  assert.deepEqual(result.details, {
+    tool: "analyze_code", error: "CodeGraph error: No existing CodeGraph data", value: "CodeGraph error: No existing CodeGraph data", truncated: false,
+  });
 });

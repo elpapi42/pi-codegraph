@@ -48,6 +48,42 @@ Each selector has a required `symbol` and optional exact project-relative `file`
 
 Target selection uses a bounded candidate search unless `file` is supplied. Relationships and paths are static indexed evidence. They can omit dynamic, generated, unresolved, or unindexed behavior and can contain ambiguous or incorrect resolutions. They are not runtime proof.
 
+### Structured output in Code Mode
+
+Pi 1.0.3 scripts calling `tools.analyze_code()` receive an object through the tool's `outputSchema` and `structuredContent`. Direct calls keep their existing Markdown. `explore_code` still returns text. Errors have no structured result and reject in Code Mode.
+
+```ts
+type Symbol = {
+  name: string; kind: string; file: string; line: number;
+  qualifiedName?: string; signature?: string;
+};
+type Section<T> = { items: T[]; total: number };
+type Neighborhood = {
+  symbol: Symbol;
+  incoming: Section<{ symbol: Symbol; kinds: string[] }>;
+  outgoing: Section<{ symbol: Symbol; kinds: string[] }>;
+  impact: Section<Symbol>;
+  testFiles: string[];
+};
+type Path = { steps: Array<{ symbol: Symbol; kind?: string }>; total: number };
+type AnalyzeResult = { projectRoot: string } & (
+  | {
+      status: "candidates"; selector: "target" | "related";
+      reason: "ambiguous" | "not_found";
+      candidates: Array<Symbol & { selector: { symbol: string; file: string; line: number } }>;
+      total: number;
+    }
+  | {
+      status: "analyzed"; target: Neighborhood; related?: Neighborhood;
+      paths?: { targetToRelated: Path | null; relatedToTarget: Path | null };
+    }
+);
+```
+
+Every `file` is relative to `projectRoot`, the selected index root. This root can be an ancestor of the supplied `projectPath`. Each candidate has a reusable selector. `not_found` means no definition satisfies the selector, even if likely candidates remain. Candidate totals count results from the bounded resolver, not all matches in the index.
+
+Neighborhood sections return at most 20 grouped symbols, with sorted relationship kinds. Their totals count symbols before the cap. Candidates also have a 20-entry cap. Test files remain sorted, deduplicated, and uncapped. Paths keep at most 20 edges through 21 steps. A path's `total` counts edges before the cap. The first step has no `kind`; later steps use the incoming edge kind. A missing path is `null`; a zero-edge path has one step. Structured data does not pass through the independent 50 Ki-character Markdown truncation.
+
 ## Filesystem boundary
 
 CodeGraph indexes code. Use `read`, `rg`, or `find` for known files, Markdown, configuration, generated runtime wiring, and exact file inventories.
